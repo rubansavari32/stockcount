@@ -1,0 +1,1400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<meta name="mobile-web-app-capable" content="yes">
+<title>StockCount Live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script>/* ---------- MiniXLSX: tiny dependency-free .xlsx writer + reader ---------- */
+const MiniXLSX = (()=>{
+  const enc = new TextEncoder();
+  const CRC = (()=>{ const t=new Uint32Array(256); for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = c&1 ? 0xEDB88320^(c>>>1) : c>>>1; t[n]=c>>>0; } return t; })();
+  function crc32(b){ let c=0xFFFFFFFF; for(let i=0;i<b.length;i++) c=CRC[(c^b[i])&255]^(c>>>8); return (c^0xFFFFFFFF)>>>0; }
+  function zip(files){ // files: [{name, data:Uint8Array}] stored (no compression)
+    const parts=[], central=[]; let off=0;
+    const d=new Date(), dosT=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1), dosD=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
+    for(const f of files){
+      const nm=enc.encode(f.name), crc=crc32(f.data), sz=f.data.length;
+      const lh=new DataView(new ArrayBuffer(30));
+      lh.setUint32(0,0x04034b50,true); lh.setUint16(4,20,true); lh.setUint16(6,0x0800,true); lh.setUint16(8,0,true);
+      lh.setUint16(10,dosT,true); lh.setUint16(12,dosD,true); lh.setUint32(14,crc,true); lh.setUint32(18,sz,true); lh.setUint32(22,sz,true); lh.setUint16(26,nm.length,true); lh.setUint16(28,0,true);
+      parts.push(new Uint8Array(lh.buffer), nm, f.data);
+      const ch=new DataView(new ArrayBuffer(46));
+      ch.setUint32(0,0x02014b50,true); ch.setUint16(4,20,true); ch.setUint16(6,20,true); ch.setUint16(8,0x0800,true); ch.setUint16(10,0,true);
+      ch.setUint16(12,dosT,true); ch.setUint16(14,dosD,true); ch.setUint32(16,crc,true); ch.setUint32(20,sz,true); ch.setUint32(24,sz,true); ch.setUint16(28,nm.length,true);
+      ch.setUint32(42,off,true);
+      central.push(new Uint8Array(ch.buffer), nm);
+      off += 30+nm.length+sz;
+    }
+    const cdSize=central.reduce((a,b)=>a+b.length,0);
+    const end=new DataView(new ArrayBuffer(22));
+    end.setUint32(0,0x06054b50,true); end.setUint16(8,files.length,true); end.setUint16(10,files.length,true); end.setUint32(12,cdSize,true); end.setUint32(16,off,true);
+    return new Blob([...parts,...central,new Uint8Array(end.buffer)],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  }
+  const x = s => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  const colName = n => { let s=""; n++; while(n){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26); } return s; };
+  function sheetXml(sh){
+    const rows=sh.rows, maxC=Math.max(1,...rows.map(r=>r.length));
+    const widths = sh.widths || Array.from({length:maxC},(_,c)=>Math.min(50,Math.max(6,...rows.slice(0,400).map(r=>String(r[c]??"").length+2))));
+    let o='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">';
+    if(sh.header) o+='<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>';
+    o+='<cols>'+widths.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join("")+'</cols><sheetData>';
+    rows.forEach((r,ri)=>{
+      o+=`<row r="${ri+1}">`;
+      r.forEach((v,ci)=>{ if(v===""||v==null) return; const ref=colName(ci)+(ri+1); const st=(sh.header&&ri===0)||(sh.boldRows&&sh.boldRows.includes(ri))?' s="1"':'';
+        if(typeof v==="number" && isFinite(v)) o+=`<c r="${ref}"${st}><v>${v}</v></c>`;
+        else o+=`<c r="${ref}" t="inlineStr"${st}><is><t xml:space="preserve">${x(v)}</t></is></c>`; });
+      o+='</row>';
+    });
+    o+='</sheetData>';
+    if(sh.header && rows.length>1) o+=`<autoFilter ref="A1:${colName(maxC-1)}${rows.length}"/>`;
+    return o+'</worksheet>';
+  }
+  function write(sheets){
+    const f=[];
+    const add=(n,s)=>f.push({name:n,data:enc.encode(s)});
+    add("[Content_Types].xml",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'+sheets.map((s,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")+'</Types>');
+    add("_rels/.rels",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+    add("xl/workbook.xml",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'+sheets.map((s,i)=>`<sheet name="${x(s.name.slice(0,31))}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join("")+'</sheets>'+
+      (sheets.some(s=>s.header&&s.rows.length>1)?'<definedNames>'+sheets.map((s,i)=>s.header&&s.rows.length>1?`<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${x(s.name.slice(0,31)).replace(/'/g,"''")}'!$A$1:$${colName(Math.max(1,...s.rows.map(r=>r.length))-1)}$${s.rows.length}</definedName>`:"").join("")+'</definedNames>':'')+'</workbook>');
+    add("xl/_rels/workbook.xml.rels",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+sheets.map((s,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join("")+`<Relationship Id="rId${sheets.length+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
+    add("xl/styles.xml",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0F766E"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>');
+    sheets.forEach((s,i)=>add(`xl/worksheets/sheet${i+1}.xml`, sheetXml(s)));
+    return zip(f);
+  }
+
+  /* ---- reader ---- */
+  async function inflate(bytes){
+    if(typeof DecompressionStream==="undefined") throw new Error("This browser can't read compressed Excel files — save the sheet as CSV and import that.");
+    const ds=new DecompressionStream("deflate-raw"); const s=new Blob([bytes]).stream().pipeThrough(ds);
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  async function unzip(buf){
+    const u=new Uint8Array(buf), dv=new DataView(buf); let e=-1;
+    for(let i=u.length-22;i>=Math.max(0,u.length-70000);i--){ if(dv.getUint32(i,true)===0x06054b50){ e=i; break; } }
+    if(e<0) throw new Error("Not a valid .xlsx file.");
+    const n=dv.getUint16(e+10,true); let p=dv.getUint32(e+16,true); const out={}; const dec=new TextDecoder();
+    for(let k=0;k<n;k++){
+      const method=dv.getUint16(p+10,true), csz=dv.getUint32(p+20,true), nl=dv.getUint16(p+28,true), xl=dv.getUint16(p+30,true), cl=dv.getUint16(p+32,true), lo=dv.getUint32(p+42,true);
+      const name=dec.decode(u.subarray(p+46,p+46+nl));
+      const ds=lo+30+dv.getUint16(lo+26,true)+dv.getUint16(lo+28,true);
+      const raw=u.subarray(ds,ds+csz);
+      out[name]={method,raw}; p+=46+nl+xl+cl;
+    }
+    return { async text(name){ const f=out[name]; if(!f) return null; const b=f.method===8?await inflate(f.raw):f.raw; return dec.decode(b); }, names:Object.keys(out) };
+  }
+  const tags=(doc,t)=>[...doc.getElementsByTagNameNS("*",t)];
+  async function readFirstSheet(buf){
+    const z=await unzip(buf), P=new DOMParser();
+    const wb=P.parseFromString(await z.text("xl/workbook.xml")||"","application/xml");
+    const first=tags(wb,"sheet")[0]; let path="xl/worksheets/sheet1.xml";
+    if(first){ const rid=first.getAttribute("r:id")||[...first.attributes].find(a=>a.localName==="id")?.value;
+      const rels=P.parseFromString(await z.text("xl/_rels/workbook.xml.rels")||"","application/xml");
+      const rel=tags(rels,"Relationship").find(r=>r.getAttribute("Id")===rid);
+      if(rel){ let t=rel.getAttribute("Target"); path = t.startsWith("/") ? t.slice(1) : "xl/"+t.replace(/^\.\//,""); } }
+    const ssx=await z.text("xl/sharedStrings.xml"); const ss=[];
+    if(ssx){ const d=P.parseFromString(ssx,"application/xml"); tags(d,"si").forEach(si=>ss.push(tags(si,"t").map(t=>t.textContent).join(""))); }
+    const sx=await z.text(path); if(!sx) throw new Error("Couldn't find the first worksheet.");
+    const d=P.parseFromString(sx,"application/xml"); const aoa=[];
+    const colIdx=ref=>{ const m=/^([A-Z]+)/.exec(ref||""); if(!m) return -1; let n=0; for(const ch of m[1]) n=n*26+ch.charCodeAt(0)-64; return n-1; };
+    tags(d,"row").forEach((row,ri)=>{ const rn=(+row.getAttribute("r")||ri+1)-1; const arr=[]; let auto=0;
+      tags(row,"c").forEach(c=>{ let ci=colIdx(c.getAttribute("r")); if(ci<0) ci=auto; auto=ci+1;
+        const t=c.getAttribute("t"); const v=tags(c,"v")[0]?.textContent; let val="";
+        if(t==="s") val=ss[+v]??""; else if(t==="inlineStr") val=tags(c,"t").map(e=>e.textContent).join(""); else if(t==="b") val=v==="1"; else if(t==="str"||t==="e") val=v??""; else val = v==null?"":(isNaN(+v)?v:+v);
+        arr[ci]=val; });
+      for(let i=0;i<arr.length;i++) if(arr[i]===undefined) arr[i]="";
+      aoa[rn]=arr; });
+    for(let i=0;i<aoa.length;i++) if(!aoa[i]) aoa[i]=[];
+    return aoa;
+  }
+  function parseCsv(text){
+    text=text.replace(/^﻿/,""); const rows=[]; let row=[], cur="", q=false;
+    const delim = (text.split("\n")[0].match(/;/g)||[]).length > (text.split("\n")[0].match(/,/g)||[]).length ? ";" : ",";
+    for(let i=0;i<text.length;i++){ const ch=text[i];
+      if(q){ if(ch==='"'){ if(text[i+1]==='"'){ cur+='"'; i++; } else q=false; } else cur+=ch; }
+      else if(ch==='"') q=true; else if(ch===delim){ row.push(cur); cur=""; } else if(ch==="\n"){ row.push(cur.replace(/\r$/,"")); rows.push(row); row=[]; cur=""; } else cur+=ch; }
+    if(cur!==""||row.length){ row.push(cur); rows.push(row); }
+    return rows.map(r=>r.map(v=>{ const t=v.trim(); return t!==""&&!isNaN(+t)?+t:t; }));
+  }
+  async function readFile(file){
+    if(/\.csv$/i.test(file.name)) return parseCsv(await file.text());
+    if(/\.xls$/i.test(file.name)) throw new Error("Old .xls format isn't supported — open it in Excel and save as .xlsx or CSV.");
+    return readFirstSheet(await file.arrayBuffer());
+  }
+  return {write, readFile};
+})();
+</script>
+<style>
+
+:root{
+  --accent:#0f766e; --accent-ink:#fff; --accent-soft:color-mix(in srgb,var(--accent) 14%,transparent);
+  --bg:#f4f5f7; --surface:#fff; --surface2:#f0f2f5; --ink:#111827; --ink2:#4b5563; --ink3:#9ca3af; --line:#e5e7eb;
+  --ok:#16a34a; --ok-soft:#dcfce7; --short:#dc2626; --short-soft:#fee2e2; --over:#d97706; --over-soft:#fef3c7; --pend:#6b7280; --pend-soft:#eef0f3; --flag:#7c3aed;
+  --r:16px; --shadow:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.05);
+  --fs:15px; --pad:14px;
+  --sat:env(safe-area-inset-top,0px); --sab:env(safe-area-inset-bottom,0px);
+}
+[data-theme=dark]{
+  --bg:#0b0f14; --surface:#141a22; --surface2:#1c2430; --ink:#eef2f7; --ink2:#a9b4c2; --ink3:#6b7686; --line:#253041;
+  --ok-soft:#0f2e1c; --short-soft:#3a1414; --over-soft:#3a2a0c; --pend-soft:#1e2631; --shadow:none;
+}
+[data-density=compact]{--pad:10px; --fs:14px}
+[data-size=large]{--fs:17px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:400 var(--fs)/1.4 Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:0;background:none}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.app{max-width:760px;margin:0 auto;min-height:100vh;padding-bottom:calc(84px + var(--sab))}
+/* header */
+.top{position:sticky;top:0;z-index:20;background:var(--bg);padding:calc(10px + var(--sat)) 16px 8px}
+.top-row{display:flex;align-items:center;gap:10px}
+.brand{flex:1;min-width:0}
+.brand h1{margin:0;font-size:19px;font-weight:800;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand p{margin:1px 0 0;color:var(--ink2);font-size:12.5px}
+.icon-btn{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:var(--surface);box-shadow:var(--shadow);border:1px solid var(--line)}
+.icon-btn svg{width:20px;height:20px}
+.prog{height:6px;border-radius:9px;background:var(--surface2);margin-top:10px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--accent);border-radius:9px;transition:width .4s}
+/* nav */
+.nav{position:fixed;left:0;right:0;bottom:0;z-index:30;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:6px 8px calc(6px + var(--sab));display:flex;justify-content:center}
+.nav-in{display:flex;max-width:760px;width:100%}
+.nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;font-size:11.5px;font-weight:600;color:var(--ink3)}
+.nav button span.pill{display:grid;place-items:center;width:56px;height:30px;border-radius:16px;transition:background .2s}
+.nav button svg{width:22px;height:22px}
+.nav button.on{color:var(--ink)}
+.nav button.on span.pill{background:var(--accent-soft);color:var(--accent)}
+.fab{position:fixed;right:max(18px,calc(50% - 362px));bottom:calc(88px + var(--sab));z-index:25;height:54px;padding:0 20px 0 16px;border-radius:18px;background:var(--accent);color:var(--accent-ink);font-weight:700;display:flex;align-items:center;gap:8px;box-shadow:0 8px 24px color-mix(in srgb,var(--accent) 40%,transparent)}
+.fab svg{width:22px;height:22px}
+.view{display:none;padding:4px 16px 16px}
+.view.on{display:block;animation:fade .2s}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
+/* cards */
+.card{background:var(--surface);border-radius:var(--r);box-shadow:var(--shadow);border:1px solid var(--line);padding:16px}
+.grid{display:grid;gap:10px}
+.g2{grid-template-columns:1fr 1fr}
+.sec-t{font-size:13px;font-weight:700;color:var(--ink2);text-transform:uppercase;letter-spacing:.06em;margin:22px 2px 10px;display:flex;justify-content:space-between;align-items:center}
+.sec-t a{color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600;cursor:pointer}
+.kpi{padding:14px;border-radius:var(--r);background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);cursor:pointer;position:relative;overflow:hidden}
+.kpi .l{font-size:12.5px;color:var(--ink2);font-weight:600;display:flex;align-items:center;gap:6px}
+.kpi .v{font-size:28px;font-weight:800;letter-spacing:-.03em;margin-top:4px}
+.kpi .s{font-size:12px;color:var(--ink3)}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+.hero{display:flex;gap:18px;align-items:center}
+.hero .ring{flex:none}
+.hero h2{margin:0;font-size:15px;color:var(--ink2);font-weight:600}
+.hero .big{font-size:40px;font-weight:800;letter-spacing:-.04em;line-height:1.05}
+.hero .sub{color:var(--ink2);font-size:13px;margin-top:4px}
+.chips-mini{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.tag{font-size:12px;font-weight:600;padding:3px 9px;border-radius:20px;background:var(--surface2);color:var(--ink2)}
+.bar-row{display:grid;grid-template-columns:96px 1fr 52px;gap:10px;align-items:center;padding:7px 0;cursor:pointer}
+.bar-row .n{font-weight:600;font-size:13px}
+.bar{height:10px;border-radius:6px;background:var(--surface2);overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+.bar-row .p{text-align:right;font-size:12.5px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.insight{display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.insight:last-child{border:0}
+.insight .ic{width:34px;height:34px;flex:none;border-radius:10px;display:grid;place-items:center;font-size:17px}
+.insight b{display:block;font-size:14px}
+.insight span{font-size:13px;color:var(--ink2)}
+/* search + filters */
+.searchbar{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:0 12px;height:46px;box-shadow:var(--shadow)}
+.searchbar svg{width:19px;height:19px;color:var(--ink3);flex:none}
+.searchbar input{flex:1;border:0;outline:0;background:none;height:100%;min-width:0}
+.chips{display:flex;gap:7px;overflow-x:auto;padding:10px 0 4px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;padding:7px 13px;border-radius:20px;background:var(--surface);border:1px solid var(--line);font-size:13px;font-weight:600;color:var(--ink2);display:flex;gap:6px;align-items:center}
+.chip.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.chip .c{font-size:11.5px;opacity:.7}
+.list-meta{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;color:var(--ink3);margin:6px 2px 8px}
+.list-meta select{border:0;background:none;color:var(--ink2);font-weight:600;font-size:12.5px}
+/* item row */
+.item{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--pad);margin-bottom:9px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.item::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--st,transparent)}
+.item[data-s=match]{--st:var(--ok)} .item[data-s=short]{--st:var(--short)} .item[data-s=excess]{--st:var(--over)}
+.item .h{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
+.item .code{font-size:12px;font-weight:600;color:var(--accent);letter-spacing:.01em}
+.item .desc{font-weight:600;margin-top:2px;line-height:1.3}
+.item .meta{font-size:12px;color:var(--ink3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .sl{font-size:11px;color:var(--ink3);font-weight:600;min-width:22px}
+.badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;white-space:nowrap;flex:none}
+.b-match{background:var(--ok-soft);color:var(--ok)} .b-short{background:var(--short-soft);color:var(--short)} .b-excess{background:var(--over-soft);color:var(--over)} .b-pending{background:var(--pend-soft);color:var(--pend)}
+.flag-ic{color:var(--flag);font-size:14px}
+.ctl{display:flex;align-items:center;gap:8px;margin-top:10px}
+.cb{flex:none;text-align:center;min-width:58px;padding:4px 6px;border-radius:10px;background:var(--surface2)}
+.cb small{display:block;font-size:10px;font-weight:700;color:var(--ink3);letter-spacing:.05em}
+.cb b{font-size:17px;font-variant-numeric:tabular-nums}
+.step{flex:1;display:flex;align-items:center;background:var(--surface2);border-radius:12px;height:46px;min-width:0}
+.step button{width:46px;height:46px;display:grid;place-items:center;font-size:22px;font-weight:600;color:var(--ink2);flex:none}
+.step button:active{transform:scale(.9)}
+.step input{flex:1;min-width:0;width:100%;height:100%;border:0;background:none;text-align:center;font-size:19px;font-weight:700;outline:0;font-variant-numeric:tabular-nums}
+.step input::placeholder{color:var(--ink3);font-weight:500;font-size:14px}
+.okbtn{flex:none;height:46px;padding:0 12px;border-radius:12px;background:var(--accent-soft);color:var(--accent);font-weight:700;font-size:13px;display:flex;align-items:center;gap:4px}
+.okbtn svg{width:18px;height:18px}
+.var{font-size:12px;font-weight:700;margin-top:6px;display:flex;gap:10px;color:var(--ink2)}
+.note-line{font-size:12.5px;color:var(--ink2);margin-top:6px;background:var(--surface2);padding:6px 9px;border-radius:8px}
+.empty{text-align:center;padding:50px 20px;color:var(--ink3)}
+.empty .e{font-size:40px}
+/* sheets */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:50;opacity:0;pointer-events:none;transition:opacity .2s}
+.scrim.on{opacity:1;pointer-events:auto}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:51;background:var(--surface);border-radius:22px 22px 0 0;max-height:92vh;overflow:auto;transform:translateY(105%);transition:transform .28s cubic-bezier(.2,.8,.2,1);padding:8px 18px calc(18px + var(--sab));max-width:760px;margin:0 auto}
+.sheet:not(.on){visibility:hidden;transition:transform .28s,visibility 0s .28s}
+.sheet.on{transform:none}
+.grab{width:40px;height:5px;border-radius:5px;background:var(--line);margin:4px auto 12px}
+.sheet h3{margin:0 0 4px;font-size:19px;letter-spacing:-.01em}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:8px 12px;font-size:14px;margin:14px 0}
+.kv dt{color:var(--ink3);font-weight:600;font-size:12.5px}
+.kv dd{margin:0;word-break:break-word}
+.big-step{display:flex;align-items:center;gap:10px;margin:14px 0}
+.big-step button{width:64px;height:64px;border-radius:18px;background:var(--surface2);font-size:30px;font-weight:600}
+.big-step input{flex:1;min-width:0;height:64px;border-radius:18px;border:2px solid var(--line);background:var(--bg);text-align:center;font-size:30px;font-weight:800;outline:0}
+.big-step input:focus{border-color:var(--accent)}
+.btn{height:48px;border-radius:14px;padding:0 18px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:8px;background:var(--surface2)}
+.btn.pri{background:var(--accent);color:var(--accent-ink)}
+.btn.danger{color:var(--short)}
+.btn.block{width:100%}
+.btn svg{width:19px;height:19px}
+textarea,.field input,.field select{width:100%;border:1px solid var(--line);border-radius:12px;background:var(--bg);padding:11px 12px;outline:0}
+textarea:focus,.field input:focus{border-color:var(--accent)}
+.field{margin:12px 0}
+.field label{display:block;font-size:12.5px;font-weight:600;color:var(--ink2);margin-bottom:6px}
+.row{display:flex;gap:10px}
+.row>*{flex:1}
+/* settings */
+.set-group{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow)}
+.set{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);cursor:pointer;width:100%;text-align:left}
+.set:last-child{border:0}
+.set .t{flex:1}
+.set .t b{display:block;font-weight:600;font-size:14.5px}
+.set .t span{font-size:12.5px;color:var(--ink3)}
+.set .ico{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);flex:none}
+.set .ico svg{width:19px;height:19px}
+.sw{width:46px;height:28px;border-radius:20px;background:var(--line);position:relative;flex:none;transition:background .2s}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.sw.on{background:var(--accent)} .sw.on::after{transform:translateX(18px)}
+.seg{display:flex;background:var(--surface2);border-radius:10px;padding:3px;flex:none}
+.seg button{padding:6px 10px;border-radius:8px;font-size:12.5px;font-weight:600;color:var(--ink2)}
+.seg button.on{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.swatches{display:flex;gap:8px;flex:none}
+.swatches button{width:26px;height:26px;border-radius:50%;border:3px solid transparent}
+.swatches button.on{border-color:var(--surface);outline:2px solid var(--ink)}
+/* focus mode */
+.focus{position:fixed;inset:0;z-index:60;background:var(--bg);display:none;flex-direction:column;padding:calc(12px + var(--sat)) 18px calc(16px + var(--sab));max-width:760px;margin:0 auto}
+.focus.on{display:flex;animation:fade .2s}
+.focus .ftop{display:flex;align-items:center;gap:10px}
+.focus .ftop .t{flex:1;font-weight:700}
+.focus .ftop .t small{display:block;color:var(--ink3);font-weight:500;font-size:12px}
+.fcard{flex:1;display:flex;flex-direction:column;justify-content:center;text-align:center;touch-action:pan-y}
+.fcard .code{font-size:15px;color:var(--accent);font-weight:600}
+.fcard .desc{font-size:24px;font-weight:800;letter-spacing:-.02em;margin:8px 0 6px;line-height:1.2}
+.fcard .meta{color:var(--ink2);font-size:13.5px}
+.fcard .cbbig{margin:22px auto 0;display:inline-flex;gap:22px;justify-content:center}
+.fcard .cbbig div{background:var(--surface);border:1px solid var(--line);padding:10px 18px;border-radius:14px;min-width:96px}
+.fcard .cbbig small{display:block;font-size:11px;color:var(--ink3);font-weight:700;letter-spacing:.06em}
+.fcard .cbbig b{font-size:26px}
+.keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.keypad button{height:58px;border-radius:14px;background:var(--surface);border:1px solid var(--line);font-size:22px;font-weight:700}
+.keypad button:active{background:var(--surface2)}
+.fdisplay{height:72px;border-radius:18px;background:var(--surface);border:2px solid var(--accent);display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:800;margin-top:8px;font-variant-numeric:tabular-nums}
+.fdisplay.empty{color:var(--ink3);font-size:18px;font-weight:600;border-color:var(--line)}
+.fbtns{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px;margin-top:10px}
+/* toast */
+.toast{position:fixed;left:50%;top:calc(12px + var(--sat));transform:translate(-50%,-20px);background:var(--ink);color:var(--bg);padding:11px 14px 11px 16px;border-radius:14px;font-size:14px;font-weight:500;display:flex;gap:14px;align-items:center;opacity:0;pointer-events:none;transition:all .25s;z-index:80;max-width:92vw}
+.toast.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.toast button{color:var(--accent);font-weight:800;filter:brightness(1.6)}
+[data-theme=dark] .toast button{filter:none}
+.hide{display:none!important}
+.var-row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.var-row:last-child{border:0}
+.var-row .m{flex:1;min-width:0}
+.var-row .m b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.var-row .m span{font-size:12px;color:var(--ink3)}
+.var-row .q{font-weight:800;font-size:16px;font-variant-numeric:tabular-nums;text-align:right}
+.var-row .q small{display:block;font-size:11px;color:var(--ink3);font-weight:600}
+.legend{display:flex;flex-direction:column;gap:8px;font-size:13px}
+.legend div{display:flex;align-items:center;gap:8px}
+.legend b{margin-left:auto;font-variant-numeric:tabular-nums}
+.foot{text-align:center;color:var(--ink3);font-size:12px;margin:24px 0 8px}
+
+/* ---- v2 additions ---- */
+.gl{display:inline-block;font-size:20px;line-height:1;font-weight:700;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.nav .gl{font-size:21px}
+.searchbar .gl{font-size:22px;color:var(--ink3);transform:scaleX(-1)}
+.okbtn .gl{font-size:17px}
+.fab .gl{font-size:19px}
+.icon-btn .gl{font-size:21px}
+.toast{top:auto!important;bottom:calc(150px + var(--sab));transform:translate(-50%,20px)}
+.toast.on{transform:translate(-50%,0)}
+.focus.on ~ .toast{bottom:auto;top:calc(64px + var(--sat))!important}
+.live{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:20px;background:var(--surface2);color:var(--ink3)}
+.live.on{background:var(--ok-soft);color:var(--ok)}
+.live i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.live.on i{animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 60%,transparent)}100%{box-shadow:0 0 0 7px transparent}}
+.av{width:22px;height:22px;border-radius:50%;flex:none;object-fit:cover;background:var(--surface2)}
+.av.lg{width:36px;height:36px}
+.who{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2);margin-top:8px;flex-wrap:wrap}
+.who .nm{font-weight:600;color:var(--ink)}
+.who .tm{color:var(--ink3)}
+.pin{display:inline-flex;align-items:center;gap:3px;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:8px;background:var(--accent-soft);color:var(--accent)}
+.team-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.team-row:last-child{border:0}
+.team-row .m{flex:1;min-width:0}
+.team-row .m b{display:block;font-size:14px}
+.team-row .m span{font-size:12px;color:var(--ink3)}
+.team-row .n{font-size:20px;font-weight:800;text-align:right;font-variant-numeric:tabular-nums}
+.team-row .n small{display:block;font-size:10.5px;color:var(--ink3);font-weight:600}
+.minibar{height:5px;border-radius:4px;background:var(--surface2);margin-top:5px;overflow:hidden}
+.minibar i{display:block;height:100%;background:var(--accent)}
+.feed{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer;align-items:flex-start}
+.feed:last-child{border:0}
+.feed .x{flex:1;min-width:0;font-size:13px;line-height:1.35}
+.feed .x b{font-weight:600}
+.feed .x .d{color:var(--ink3);font-size:12px;display:block;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.feed .t{font-size:11.5px;color:var(--ink3);white-space:nowrap}
+.hist{border-left:2px solid var(--line);margin:8px 0 0 10px;padding-left:14px}
+.hist div{position:relative;font-size:12.5px;padding:6px 0;color:var(--ink2)}
+.hist div::before{content:"";position:absolute;left:-20px;top:11px;width:10px;height:10px;border-radius:50%;background:var(--surface);border:2px solid var(--accent)}
+.hist b{color:var(--ink)}
+.banner{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:14px;background:var(--over-soft);color:var(--ink);font-size:13px;margin-bottom:10px}
+.banner.info{background:var(--accent-soft)}
+.locrow{display:flex;gap:8px;margin-top:8px}
+.locrow input{flex:1;min-width:0;height:40px;border-radius:12px;border:1px solid var(--line);background:var(--surface);padding:0 12px;outline:0;font-size:14px}
+.locrow input:focus{border-color:var(--accent)}
+.set.dis{opacity:.5;pointer-events:none}
+.lock{font-size:11px;font-weight:700;color:var(--ink3);background:var(--surface2);padding:2px 7px;border-radius:6px;margin-left:6px;text-transform:none;letter-spacing:0}
+.list-meta select{max-width:46%}
+.fdisplay{height:64px;font-size:32px}
+.keypad button{height:52px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="top-row">
+      <div class="brand"><h1 id="hStore">RDP Building 03 Store</h1><p style="display:flex;align-items:center;gap:6px;min-width:0"><span class="live" id="live" style="flex:none"><i></i><span>Local</span></span><span id="hSub" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Physical stock audit</span></p></div>
+      <button class="icon-btn" id="btnExportTop" aria-label="Export to Excel"><span class="gl">⤓</span></button>
+    </div>
+    <div class="prog"><i id="hProg" style="width:0"></i></div>
+  </header>
+
+  <!-- DASHBOARD -->
+  <section class="view on" id="v-dash">
+    <div id="roBanner"></div>
+    <div class="card hero">
+      <div class="ring" id="ring"></div>
+      <div style="flex:1;min-width:0">
+        <h2>Audit progress</h2>
+        <div class="big" id="dPct">0%</div>
+        <div class="sub" id="dSub">0 of 0 items counted</div>
+        <div class="chips-mini" id="dEta"></div>
+      </div>
+    </div>
+    <div class="grid g2" style="margin-top:10px" id="kpis"></div>
+
+    <div class="sec-t">Team <span id="teamNote" style="text-transform:none;letter-spacing:0;font-weight:500;color:var(--ink3)"></span></div>
+    <div class="card" style="padding:4px 16px" id="team"></div>
+
+    <div class="sec-t">Live activity <a data-go="count" id="actAll">Open list</a></div>
+    <div class="card" style="padding:4px 16px" id="activity"></div>
+
+    <div class="sec-t">Status breakdown</div>
+    <div class="card" style="display:flex;gap:18px;align-items:center">
+      <div id="donut" style="flex:none"></div>
+      <div class="legend" style="flex:1" id="legend"></div>
+    </div>
+
+    <div class="sec-t">Insights</div>
+    <div class="card" style="padding:4px 16px" id="insights"></div>
+
+    <div class="sec-t">Progress by category <a data-go="count">Open list</a></div>
+    <div class="card" id="cats"></div>
+
+    <div class="sec-t">Largest variances <a data-go="var">See all</a></div>
+    <div class="card" style="padding:4px 16px" id="topVar"></div>
+    <div class="foot" id="dFoot"></div>
+  </section>
+
+  <!-- COUNT -->
+  <section class="view" id="v-count">
+    <div class="searchbar">
+      <span class="gl">⌕</span>
+      <input id="q" type="search" placeholder="Search code, description, bin, location…" autocomplete="off">
+      <button id="qClear" class="hide" style="color:var(--ink3);font-size:20px">×</button>
+    </div>
+    <div class="chips" id="fStatus"></div>
+    <div class="chips" id="fCat" style="padding-top:2px"></div>
+    <div class="list-meta"><span id="lCount"></span>
+      <span style="display:flex;gap:4px">
+        <select id="fBy" aria-label="Counted by"></select>
+        <select id="sort" aria-label="Sort">
+          <option value="sl">Sort: Sl No</option><option value="code">Sort: Item code</option><option value="desc">Sort: Description</option>
+          <option value="cb">Sort: Book qty ↓</option><option value="var">Sort: Variance</option><option value="recent">Sort: Recently counted</option><option value="bin">Sort: Location / Bin</option>
+        </select>
+      </span>
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <!-- VARIANCE -->
+  <section class="view" id="v-var">
+    <div class="grid g2" id="varKpi"></div>
+    <div class="chips" id="fVar" style="margin-top:6px"></div>
+    <div class="card" style="padding:4px 16px;margin-top:6px" id="varList"></div>
+    <div style="margin-top:14px" class="row">
+      <button class="btn" id="btnCopy"><span class="gl">⧉</span>Copy summary</button>
+      <button class="btn pri" id="btnExportVar"><span class="gl">⤓</span>Export Excel</button>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="view" id="v-more">
+    <div class="sec-t" style="margin-top:6px">You</div>
+    <div class="card">
+      <div class="field" style="margin:0"><label>Your name on counts</label><input id="sMyName" placeholder="e.g. Ruban"><div style="font-size:12px;color:var(--ink3);margin-top:6px" id="myNameHint">Shown to the team next to every count you make.</div></div>
+    </div>
+
+    <div class="sec-t lanonly hide">Invite colleagues</div>
+    <div class="card lanonly hide">
+      <div style="font-size:13px;color:var(--ink2)">Link</div><div class="mono" id="invLink" style="font-size:13px;word-break:break-all;margin:2px 0 10px"></div>
+      <div style="font-size:13px;color:var(--ink2)">Team code</div><div class="mono" id="invCode" style="font-size:22px;font-weight:700;letter-spacing:.15em;margin:2px 0 12px"></div>
+      <button class="btn pri block" id="btnInvite">⧉ Copy invite message</button><button class="btn block" id="btnSwitch" style="margin-top:8px">⇄ Join or start a different audit</button>
+      <div style="font-size:12px;color:var(--ink3);margin-top:8px" id="invNote"></div>
+    </div>
+    <div class="sec-t lanonly hide">Owner PIN</div>
+    <div class="card lanonly hide">
+      <div class="row" style="align-items:flex-end"><div class="field" style="margin:0;flex:2"><label>Owner PIN (shown when the audit was created)</label><input id="sPin" inputmode="numeric" maxlength="8" placeholder="••••"></div><button class="btn pri" id="btnPin" style="flex:1">Unlock</button></div>
+      <div style="font-size:12px;color:var(--ink3);margin-top:8px" id="pinState"></div>
+    </div>
+    <div class="sec-t">Count fields <span class="lock hide" id="fieldsLock">Owner only</span></div>
+    <div class="set-group" id="fieldGroup">
+      <div class="set" data-field="loc"><div class="ico">📍</div><div class="t"><b>Location</b><span>Store area, rack or room</span></div><div class="sw"></div></div>
+      <div class="set" data-field="bin"><div class="ico">🗄</div><div class="t"><b>Bin</b><span>Bin / shelf number</span></div><div class="sw"></div></div>
+      <div class="set" data-field="remark"><div class="ico">📝</div><div class="t"><b>Remark</b><span>Free-text note per item</span></div><div class="sw"></div></div>
+    </div>
+    <div class="set-group" style="margin-top:10px">
+      <div class="set" data-tog="sticky"><div class="ico">📌</div><div class="t"><b>Remember my location & bin</b><span>Pre-fill the last Location/Bin you used while you walk the aisle</span></div><div class="sw"></div></div>
+    </div>
+
+    <div class="sec-t">Audit details <span class="lock hide" id="metaLock">Owner only</span></div>
+    <div class="card" id="metaCard">
+      <div class="field" style="margin-top:0"><label>Store / location name</label><input id="sStore"></div>
+      <div class="row"><div class="field"><label>Audit date</label><input id="sDate" type="date"></div>
+      <div class="field"><label>Reference</label><input id="sRef" placeholder="e.g. Q4 cycle count"></div></div>
+    </div>
+
+    <div class="sec-t">Counting</div>
+    <div class="set-group">
+      <div class="set" data-tog="blind"><div class="ico">👁</div><div class="t"><b>Blind count</b><span>Hide book quantity (CB) while counting</span></div><div class="sw"></div></div>
+      <div class="set" data-tog="autoNext"><div class="ico">⏭</div><div class="t"><b>Auto-advance in Quick count</b><span>Jump to the next pending item after saving</span></div><div class="sw"></div></div>
+      <div class="set" data-tog="haptic"><div class="ico">📳</div><div class="t"><b>Haptic feedback</b><span>Vibrate on save (Android)</span></div><div class="sw"></div></div>
+      <div class="set" data-tog="hideDone"><div class="ico">✅</div><div class="t"><b>Hide matched items in list</b><span>Keep the list focused on work left</span></div><div class="sw"></div></div>
+    </div>
+
+    <div class="sec-t">Appearance</div>
+    <div class="set-group">
+      <div class="set"><div class="t"><b>Theme</b></div><div class="seg" data-seg="theme"><button data-v="auto">Auto</button><button data-v="light">Light</button><button data-v="dark">Dark</button></div></div>
+      <div class="set"><div class="t"><b>Accent</b></div><div class="swatches" id="swatches"></div></div>
+      <div class="set"><div class="t"><b>Density</b></div><div class="seg" data-seg="density"><button data-v="cozy">Cozy</button><button data-v="compact">Compact</button></div></div>
+      <div class="set"><div class="t"><b>Text size</b></div><div class="seg" data-seg="size"><button data-v="normal">Normal</button><button data-v="large">Large</button></div></div>
+    </div>
+
+    <div class="sec-t">Data</div>
+    <div class="set-group">
+      <button class="set" id="btnExport"><div class="ico"><span class="gl">⤓</span></div><div class="t"><b>Export to Excel (.xlsx)</b><span>Audit · Variances · Change log · Team · Summary</span></div></button>
+      <button class="set localonly" id="btnBackup"><div class="ico">💾</div><div class="t"><b>Back up all data (.json)</b><span>Save counts, history & settings — keep a copy before clearing the browser</span></div></button>
+      <label class="set localonly" for="restoreIn"><div class="ico">♻</div><div class="t"><b>Restore from backup</b><span>Load a .json backup — also moves your audit to another phone</span></div></label>
+      <input type="file" id="restoreIn" accept=".json,application/json" class="hide">
+      <button class="set" id="btnCsv"><div class="ico">⎘</div><div class="t"><b>Export CSV</b><span>Single sheet, opens anywhere</span></div></button>
+      <label class="set adm" for="fileIn"><div class="ico"><span class="gl">⤒</span></div><div class="t"><b>Import a stock sheet</b><span>Load another store's Excel — replaces list for everyone</span></div></label>
+      <input type="file" id="fileIn" accept=".xlsx,.xlsm,.csv" class="hide">
+      <button class="set ctr" id="btnAdd"><div class="ico">＋</div><div class="t"><b>Add an item not on the list</b><span>Found stock that isn't in the system</span></div></button>
+      <button class="set adm" id="btnResetCounts"><div class="ico" style="background:var(--short-soft);color:var(--short)">↺</div><div class="t"><b style="color:var(--short)">Clear all counts</b><span>Removes everyone's counts — keeps the item list</span></div></button>
+    </div>
+    <div class="sec-t cloudonly">Counting with your team</div>
+    <div class="card cloudonly" style="font-size:13.5px;color:var(--ink2);line-height:1.5">
+      Open this page on claude.ai → <b>Share</b> → invite each colleague by email with <b>Can edit</b>. They sign in to Claude with that email and open the link — every count they save shows here live with their name and time. Only you can change count fields, audit details, import or clear counts.
+    </div>
+    <div class="sec-t localonly">About this offline version</div>
+    <div class="card localonly" style="font-size:13.5px;color:var(--ink2);line-height:1.5">
+      Works without internet or a Claude account. Everything is saved in this browser on this device. Use <b>Back up all data</b> regularly, and <b>Export to Excel</b> when the count is done. For live team counting, use the shared claude.ai version.
+    </div>
+    <div class="foot" id="syncNote">Saved on this device</div>
+  </section>
+</div>
+
+<button class="fab" id="fab"><span class="gl">⚡</span>Quick count</button>
+
+<nav class="nav"><div class="nav-in">
+  <button data-go="dash" class="on"><span class="pill"><span class="gl">▦</span></span>Dashboard</button>
+  <button data-go="count"><span class="pill"><span class="gl">☰</span></span>Count</button>
+  <button data-go="var"><span class="pill"><span class="gl">±</span></span>Variances</button>
+  <button data-go="more"><span class="pill"><span class="gl">⚙</span></span>Settings</button>
+</div></nav>
+
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet"><div style="position:sticky;top:-8px;z-index:2;background:var(--surface);display:flex;align-items:center;padding-top:4px"><div class="grab" style="margin:4px auto 10px"></div><button id="sheetX" aria-label="Close" style="position:absolute;right:-4px;top:2px;width:36px;height:36px;border-radius:50%;background:var(--surface2);font-size:20px;color:var(--ink2)">×</button></div><div id="sheetBody"></div></div>
+
+<div class="focus" id="focus">
+  <div class="ftop">
+    <button class="icon-btn" id="fClose" aria-label="Close"><span class="gl">✕</span></button>
+    <div class="t" id="fTitle">Quick count</div>
+    <div class="seg" id="fMode"><button data-v="pending" class="on">Pending</button><button data-v="all">All</button></div>
+  </div>
+  <div class="prog"><i id="fProg"></i></div>
+  <div class="fcard" id="fCard"></div>
+  <div class="locrow" id="fLoc"></div>
+  <div class="fdisplay" id="fDisp"></div>
+  <div class="keypad" id="keypad"></div>
+  <div class="fbtns">
+    <button class="btn" id="fPrev">‹ Prev</button>
+    <button class="btn pri" id="fSave">Save ✓</button>
+    <button class="btn" id="fNext">Skip ›</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span id="toastMsg"></span><button id="toastUndo">UNDO</button></div>
+
+<script src="config.js"></script>
+<script>
+const SEED = [[1,"AFC-ATG-EMM-002","AFC PG600 Gate EMM Motherboard",1,"EACH","NA","DA1K1100 Embedded Box PC motherboard"],[2,"AFC-BNA-014","BNA Flexible Circuit, ELCO Down Right",1,"EACH","MEI","462255930P"],[3,"AFC-BNA-016","Belt, HTD, Reinforced 804MM, BNA57",1,"EACH","MEI","646000001"],[4,"AFC-BNA-022","Clip, Cash Box Handle, BNA",7,"EACH","MEI","661250001"],[5,"AFC-BNA-023-PLASTIC","BNA Length Barrier Plastic Part Only",1,"EACH","CMS","448442780P5"],[6,"AFC-BNA-024","Axle, Locking System, TVM BNA-541:",1,"EACH","MEI","448442740"],[7,"AFC-BNA-029","TVM-BNA 541: Shoulder Clip",1,"EACH","MEI","614151801"],[8,"AFC-BNA-033","Lever, Return, TVM-BNA 541",1,"EACH","MEI","426335700"],[9,"AFC-BNA-037","Motor, Transport, and Filter BNA52",1,"EACH","MEI","610699001P"],[10,"AFC-BNA-040","Board, Main, BNA, PCB,",1,"EACH","",""],[11,"AFC-BNA-047","Bearing, Ball, Radial, 4/9x4",8,"EACH","MEI INC.","Part No.: 420038060"],[12,"AFC-BNA-057","Sensor, FPC Escrow BNA57",1,"EACH","MEI INC.","Part No.: 607952001P"],[13,"AFC-BNA-061","Circuit, Flexible, (Elco Down Left)",1,"EACH","MEI INC.","Part No.: 462255760P"],[14,"AFC-BNA-070","Axle 7, Complete Assembly",1,"EACH","MEI INC.","Part No.: 425336490P"],[15,"AFC-BNA-073","Axle 15, Complete Assembly",1,"EACH","MEI INC.","Part No.: 425336430P"],[16,"AFC-BNA-088","Clip, Circlip, 2.3 x 0.6, Benzing",5,"PACKET","MEI INC.","Part No.: 416548348"],[17,"AFC-BNA-089","Clip, Circlip, 3.2 x 0.6, Benzing",1,"EACH","MEI INC.","Part No.: 416548358"],[18,"AFC-BNA-091","Clip, Circlip, 6.0 x 0.7, Benzing",4,"PACKET","MEI INC.","Part No.: 416548378"],[19,"AFC-BNA-119","Ring BNA 5X, 426938610",3,"EACH","MEI","426938610"],[20,"AFC-BNA-HDL","Handle, Green, BNA542",1,"EACH","MEI INC.","620079801"],[21,"AFC-CAR-PSU01","Power supply, 12V, Car PTV",2,"EACH","",""],[22,"AFC-CAR-TER-ANTCBL","Antenna Cable, Terminal",4,"EACH","",""],[23,"AFC-CONS-0012","Cable, Patch, 3 Mtrs",22,"EACH","NA","Cable, Patch, 3 Mtrs"],[24,"AFC-CONS-0028","Connector, CAT 6, RJ45",5,"EACH","NA","Connector, CAT 6, RJ45"],[25,"AFC-CONS-035","Transistor, C945, 3 Pin, IAS EL",4,"EACH","NA","C945, 3pin, IAS EL"],[26,"AFC-CONS-036","Regulator, L7809, IAS EL",3,"EACH","NA","L7809"],[27,"AFC-CONS-CAP-1000UF16V","Capacitor, 1000uF/16V, RUBYCON",10,"EACH","RUBYCON","Electrolytic Capacitor"],[28,"AFC-CONS-CAP-1000UF25V","Capacitor, 1000uF/25V, RUBYCON",18,"EACH","RUBYCON","Electrolytic Capacitor"],[29,"AFC-CONS-CAP-1000UF35V","Capacitor, 1000uF/35V, RUBYCON",11,"EACH","RUBYCON","Electrolytic Capacitor"],[30,"AFC-CONS-CAP-1000UF50V","Capacitor, 1000uF/50V, RUBYCON",21,"EACH","RUBYCON","Electrolytic Capacitor"],[31,"AFC-CONS-CAP-100UF450V","Capacitor, 100uF/450V, RUBYCON",3,"EACH","RUBYCON","Electrolytic Capacitor"],[32,"AFC-CONS-CAP-100UF50V","Capacitor, 100uF/50V, RUBYCON",6,"EACH","RUBYCON","Electrolytic Capacitor"],[33,"AFC-CONS-CAP-10UF16V","Capacitor, 10uF/16V, RUBYCON",7,"EACH","RUBYCON","Electrolytic Capacitor"],[34,"AFC-CONS-CAP-10UF50V","Capacitor, 10uF/50V, RUBYCON",3,"EACH","RUBYCON","Electrolytic Capacitor"],[35,"AFC-CONS-CAP-180UF400V","Capacitor, 180uF/400V, RUBYCON",2,"EACH","RUBYCON","Electrolytic Capacitor"],[36,"AFC-CONS-CAP-2200UF10V","Capacitor, 2200uF/10V, RUBYCON",6,"EACH","RUBYCON","Electrolytic Capacitor"],[37,"AFC-CONS-CAP-2200UF16V","Capacitor, 2200uF/16V, RUBYCON",4,"EACH","RUBYCON","Electrolytic Capacitor"],[38,"AFC-CONS-CAP-2200UF50V","Capacitor, 2200uF/50V, RUBYCON",3,"EACH","RUBYCON","Electrolytic Capacitor"],[39,"AFC-CONS-CAP-22UF50V","Capacitor, 22uF/50V, Electrolytic Capacitor, Radial",4,"EACH","RUBYCON","22uF/50V,\u00a0 Electrolytic Capacitor"],[40,"AFC-CONS-CAP-3300UF/6.3V","Capacitor 6.3V/3300UF",11,"EACH","PANASONIC","3300uF 6.3V FJ"],[41,"AFC-CONS-CAP-330UF35V","Capacitor, 330UF/35V, Electrolytic",6,"EACH","NA","35V 330uF Aluminum Electrolytic Capaci"],[42,"AFC-CONS-CAP-4.7UF50V","Capacitor, 4.7uF/50V, RUBYCON",5,"EACH","RUBYCON","Electrolytic Capacitor"],[43,"AFC-CONS-CAP-470UF/200V","Capacitor 470UF/200V",5,"EACH","RUBYCN","200VXG470MEF CSN25X30"],[44,"AFC-CONS-CAP-470UF25V","Capacitor, 470uF/25V, RUBYCON",11,"EACH","RUBYCON","Electrolytic Capacitor"],[45,"AFC-CONS-CAP-470UF50V","Capacitor, 470uF/50V, RUBYCON",10,"EACH","RUBYCON","Electrolytic Capacitor"],[46,"AFC-CONS-CAP-47UF25V","Capacitor, 47uF/25V, Electrolytic,",7,"EACH","NA","47uF/25V, Electrolytic, Part# CPN2665"],[47,"AFC-CONS-CAP-47UF50V","Capacitor, 47uF/50V, RUBYCON",4,"EACH","RUBYCON","Electrolytic Capacitor"],[48,"AFC-CONS-CAP-68UF400V","Capacitor, 68uF/400V, RUBYCON",10,"EACH","RUBYCON","Electrolytic Capacitor"],[49,"AFC-CONS-CAP-82UF/200V","Capacitor 200V/82UF FOR PID",4,"EACH","PANASONIC","EEUEE2D820S"],[50,"AFC-CONS-VBS-LT1764","Regulator, LT1764AEQ-3.3",1,"EACH","LINEAR TECHNOLOGY","LT1764AEQ-3.3"],[51,"AFC-CTD-CONS-0004","CT Dispenser Belt 2, Gear Belt PU, Prt#: 701.1148/9012/DE",1,"EACH","THALESFCS","refer to reference picture"],[52,"AFC-CTD-CONS-0006","CT Dispenser Divide Roller Back Pressure; 701.1148/9010/DE",4,"EACH","CCS","Prt#: 701.1148/9010/DE"],[53,"AFC-CTD-CONS-0007","CT Dispenser Roller XC; Prt#: 701.1148/9022/DE",1,"EACH","CCS","Prt#: 701.1148/9022/DE"],[54,"AFC-CTD-GMTR01","CT Dispenser, CCS KGB, Gear Motor 12V DC (For Printer head)",1,"EACH","",""],[55,"AFC-E-BNR-BELT160","Belt, DS  MXL, 160T, W4.76_GF, BNR",1,"EACH","CPI/MEI","970704001 - Belt, DS MXL, 160T, W4.76_GF, BNR"],[56,"AFC-E-BNR-BELT270","Belt, BT, MXL 270-6.35, BNR",2,"EACH","CPI/MEI","654051001P20"],[57,"AFC-E-BNR-BELT-DOOR400","Belt, SP MXL Door 400, BNR",2,"EACH","MEI","657787001P10"],[58,"AFC-E-BNR-BOTTOM-ASSY","Assembly, MMA BT Bottom, BNR",2,"EACH","CPI/MEI","984005275P1"],[59,"AFC-E-BNR-BTSPRING-LCK","BNR, MM BT Spring Locking Lever",1,"PACKET","CPI/MEI","671350001P50"],[60,"AFC-E-BNR-BU?M2 ASSY","S BNR, BU-M2 ASSY,Motor",1,"EACH","CPI/MEI","670731001P1 - S BNR, BU?M2 ASSY, PK1"],[61,"AFC-E-BNR-CB-HDL-ASSY","Handle, Knob, Strap",1,"EACH","MEI/CPI","982877001P10"],[62,"AFC-E-BNR-CBL02","Cable Flat, HI, Front Up, FFC, BNR",2,"EACH","CPI/MEI","666459001P10"],[63,"AFC-E-BNR-CBL03","Cable Flat, HI, UP, Rear, FFC, BNR",3,"EACH","CPI/MEI","984002207P10"],[64,"AFC-E-BNR-CBL04","Cable Flat, HI, Down, Rear, FFC, BNR",3,"EACH","CPI/MEI","984004206P10"],[65,"AFC-E-BNR-DOWNB-SENSOR-ASSY","S BNR, RS DOWNB Sensor Assembly",2,"EACH","CPI","675692001P1"],[66,"AFC-E-BNR-GMA","GMA, RE M1, BNR",1,"EACH","MEI/CPI","667214001P1"],[67,"AFC-E-BNR-INCHASSIS-ASSY","S BNR, MMA HNNER Chassis assembly",2,"EACH","CPI","984007279P1"],[68,"AFC-E-BNR-INLET-PCB","PCB, Inlet Assembly, PCA, MMA, BNR",1,"EACH","MEI","111554747P1"],[69,"AFC-E-BNR-M1MOTOR-ASSY","S BNR, MM M1 W/ Gear Assembly",1,"EACH","CPI","668448001P1"],[70,"AFC-E-BNR-MBD","CPU Board, MMA Assembled, BNR",2,"EACH","CPI/MEI","111556746P1"],[71,"AFC-E-BNR-ORING01","Oring, Positioner Driving, BNR",3,"SET","CPI/MEI","984009739P5"],[72,"AFC-E-BNR-POSITIONER-ASSY","S BNR, MMA Positioner Full Assembly",1,"EACH","CPI","984001272P1"],[73,"AFC-E-BNR-RECHASSIS-ASSY","S BNR, MMA HREAR Chassis assembly",2,"EACH","CPI","984003276P1"],[74,"AFC-E-BNR-RE-OPCB","PCB, Assembled, RE-Opto?Int, BNR",1,"EACH","MEI","666051001P5"],[75,"AFC-E-BNR-ROTDIV","Rotating Diverter kit, MMS, BNR",3,"EACH","CPI/MEI","984008422P1"],[76,"AFC-E-BNR-SBD","Sensor Board, BNR",1,"EACH","MEI/CPI","984001113P1"],[77,"AFC-E-BNR-SEN-ASSY","Assembly, Sensor RED GEN2, RS-UP, BNR",2,"EACH","CPI/MEI","955101001P1"],[78,"AFC-E-BNR-SHAFT02","Shaft 5&7, BU, Kit, BNR",1,"SET","CPI/MEI","984002241p1"],[79,"AFC-E-BNR-STSHAFT","Assembly, Revolving shaft, ST BNR",2,"EACH","CPI/MEI","665636001P10"],[80,"AFC-E-BNR-TDIV-ASSY","Assembly, MMA BU, Transport Diverter, BNR",1,"EACH","NA","984006288P5"],[81,"AFC-E-BNR-TRASHBIN-KIT","Kit, Trash Bin, BNR",1,"SET","MEI/CPI","984009011P1"],[82,"AFC-E-BNR-UPB-SENSOR-ASSY","S BNR, RS UPB Sensor Assembly",4,"EACH","CPI","675707001P1"],[83,"AFC-E-BNR-UPSENSOR-ASSY","S BNR, RS UP Sensor Red GEN2 Assembly",1,"EACH","CPI","955101001P1"],[84,"AFC-E-BNR-W-SPRG","BNR,OUTLET FLAP W/SPRING",1,"EACH","MEI/CPI","955410001P10"],[85,"AFC-E-DP-VGA-IC","DP to VGA converter card IC",1,"EACH","CHRONTEL","CH7517A-BF"],[86,"AFC-E-GAT-COV-GLS","Gate SMV LCD Glass cover",11,"EACH","NA","\"Rectangular Glass, 14cm x 10cm x 4 mil (thickness) with scr"],[87,"AFC-E-GAT-PWR-IC","Power regulator IC for PG600 EMM (Data sheet attached)",2,"EACH","ONSEMI /FAIRCHILD","FAN2356AMPX"],[88,"AFC-E-GAT-THRMLPAD","Heat sink",1,"EACH","TISHRIC","100mm*100mm*1mm,"],[89,"AFC-E-TVM-KSP","Printer Kiosk",1,"EACH","",""],[90,"AFC-E-TVM-SCN05","LCD AD board",1,"EACH","NA","NA"],[91,"AFC-FCG-BR1","Barrier, Obstacle Right, Standard",1,"EACH","","A111500107"],[92,"AFC-FCG-CONS-0004","Bolt & Nut, Gate Flap Top Plate-Top, Set",18,"SET","",""],[93,"AFC-FCG-CONS-0008","Flap, Spring, 3097-5094",3,"EACH","THALES","3097_5094"],[94,"AFC-FCG-CONS-0013","Flap, Arm, Main Left, 1018-5038",1,"EACH","THALESFCS","refer to par reference picture provided"],[95,"AFC-FCG-CONS-0016","Flap, Arm, 4.5\", 1018-5015",1,"EACH","NA","NA"],[96,"AFC-FCG-PS24","Power Supply Unit, 24V",1,"EACH","LAMBDA","HWS150A-24/A"],[97,"AFC-FCG-UPS-BAT","Gate UPS Battery",4,"EACH","","HR1224W F2F1, 12V, 24W"],[98,"AFC-TOM-RP01","Receipt Printer for TOM AIO",1,"EACH","SEIKO INSTRUMENTS","RP-E10-K3FJ1-U-C5"],[99,"AFC-TOM-RP-012","COVER B ASSY TMP7",1,"EACH","E-POS","TSP743"],[100,"AFC-TOM-TVM-GAT-CF4","Memory, Flash, 4GB for TOM/TVM and Gate",2,"EACH","TWINMOS/ TRANSEND / ADVA","4GB/8GB Compact Flash Memory Card"],[101,"AFC-TVM-BNR-007","BNR,USB CABLE2",2,"PACKET","MEI/CPI","666446001P10"],[102,"AFC-TVM-CIO","PCB, Card IO Unit",1,"EACH","THALESFCS","A112400040"],[103,"AFC-TVM-CRY-CA-CFRONT01","Cover Front, 29220080, Phoenix Mecano",1,"EACH","PHOENIX MECANO","29220080"],[104,"AFC-TVM-CRY-CA-MB01","Main PCB, 19010068, Phoenix Mecano",1,"EACH","PHOENIX MECANO","19010068"],[105,"AFC-TVM-DRUM-IRLED","IR LED FOR CRY DRUM",1,"EACH","VISHAY","EL-1KL3 5mm Infrared Emitting Diodes"],[106,"AFC-TVM-MCD-001","SanDisk 64GB Extreme Pro microSD UHS (Part No. SDSQXCU 064G GN6MA)",1,"EACH","SANDISK","Part No. SDSQXCU 064G GN6MA"],[107,"AFC-TVM-UPS-BAT","TVM UPS Battery",4,"EACH","CSB BATTERY COMPANY LIMI","GP6120F2"],[108,"AFC-VBS-CAP-620UF/6.3V","Capacitor, 620UF/6.3V, Electrolytic",9,"EACH","SANYO","620UF/6.3V"],[109,"AFC-VBS-CONS-CF8GB","Flash Card, 8GB, Compact Flash",2,"EACH","ADVANTECH","SQF-P10S2-8G-P8E"],[110,"AFC-VBS-RAM-1GB","RAM KVR333X64SC25/1G, 1GB, DDR2, SD RAM, SODIMM, KINGSTON",3,"EACH","KINGSTON","1GB"],[111,"AFC-WS-CONS-0002","Capasitor, 2200uF/16V",30,"EACH","",""],[112,"AFC-WS-CONS-0004","Capacitor, 470uF/25V",15,"EACH","",""],[113,"AFC-WS-CONS-0005","Capacitor, 3300uF/10V",8,"EACH","RUBYCON","10ZL3300M10X25"],[114,"AFC-WS-CONS-0011","IRF3205 MOSFET",11,"EACH","FARNELL","214-8052"],[115,"AFC-WS-CONS-0013","Diode, MUR460",10,"EACH","FARNELL","162-5177"],[116,"AFC-WS-CONS-0014","Fuse, Maxi Blade, 40a (Amber Colour)",1,"EACH","FARNELL","994-3161"],[117,"AFC-WS-CONS-0034","Oil, MR1A, 50ml",1,"BOTTLE","MEI","270110610"],[118,"AFC-WS-CONS-CAP02","Capacitor, 2.2uF/50V )- 100 Pieces per Packet",2,"EACH","RUBYCON","Capacitor, 2.2uF/50V - Electrolytic, Radial"],[119,"AFC-WS-CONS-CAP04","Capacitor, 22uF/50V",2,"EACH","",""],[120,"AFC-WS-CONS-CAP05","Capacitor, 47uF/50V",4,"EACH","",""],[121,"AFC-WS-CONS-FUS01","Fuse, 4A, 20mm",7,"EACH","BUSSMANN","Glass cartridge Fuse, 4A, 20mm"],[122,"AFC-WS-CONS-FUS06","Fuse, 1A, 20mm",5,"EACH","BUSSMANN","GF5X20/1A"],[123,"AFC-WS-CONS-MDRV02","Motor Driver, L6208D",5,"EACH","",""],[124,"ATCS-ATVBS-MX6","EDIMM module for Alstom train VBS",1,"EACH","INFINITY","001589633QI68A"],[125,"ATCS-COM-PID-PSFAN","Fan, for PID PSU, 12VDC",1,"EACH","NMB-MAT7","2410ML-04W-B40"],[126,"ATCS-MCEM91-ARMFIX","Switch Drive Arm Fixation",1,"EACH","VOSSLOH","878010166"],[127,"ATCS-MCEM91-BRKASSEMBLY","Switch Break Pad Assembly",1,"EACH","VOSSLOH","878010234"],[128,"ATCS-MCEM91-DRIVEARM","Switch Driving Arm",1,"EACH","VOSSLOH","878013005"],[129,"ATCSR-CA-PCB-IS","Coin Acceptor, PCB, Inductive sensor",1,"EACH","PHOENIX MECANO","Article No: 19010032"],[130,"ATCSR-CA-PCB-LS","Coin Acceptor, PCB, Large optical sensor",1,"EACH","PHOENIX MECANO","Article No: 19010073"],[131,"ATCSR-CA-PCB-SS","Coin Acceptor, PCB, Small  optical sensor",1,"EACH","PHOENIX MECANO","Article No: 19010072"],[132,"ATCSR-CONS-CAP01","Capacitor, Electrolytic, 22UF/50V",7,"EACH","PANASONIC","EEUFR1H100"],[133,"ATCSR-IC-0007","Chip for BNA Main Board, 100 Pins Very Thin Quad Flat Pack (SMD) XCS05XL VQG100, XILINX",5,"EACH","XILINX SPARTAN","XCS05XL-4VQ100C"],[134,"ATCSR-IC-0019","9435B IC, 8 pin, TVM printer",4,"EACH","NA","9435B IC,8 pin, Part# 781-SI9435BDY-T1-E3"],[135,"ATCSR-IC-0021","IC, Switching Controllers Power Sup Controller, VBS Server",1,"EACH","NA","SI9138LG, Part# 781-SI9138LG, 28 PIN"],[136,"ATCSR-IC-SMDPC817","Optocoupler,  PC817, SMD",5,"EACH","NA","na"],[137,"ATCSR-IC-UC3843","UC3843, 8 Pin IC",4,"EACH","ST MICROELECTRONICS","UC3843"],[138,"ATCSR-IC-UC3845","UC3845, 8 Pin IC",5,"EACH","ST MICROELECTRONICS","UC3845 , 8 pin IC"],[139,"ATCSR-IC-W25Q64FW","WinBond BIOS IC, W25Q64FW",3,"EACH","WINBOND","W25Q64FW (64M-bit) Serial Flash memory"],[140,"ATCSR-TVM-CHP-LCK","Hopper Lock",3,"EACH","THALESFCS",""],[141,"ATCSR-VBS-CAP02","Capacitor, Polymer, for VBS, 100uF/35V SMD, 6.3x5.4mm, EEE1VA101XAP, PANASONIC",14,"EACH","PANASONIC","EEE1VA101XP"]];
+const LSKEY = "stockcount.rdp03.v1";
+const ACCENTS = ["#0f766e","#2563eb","#7c3aed","#db2777","#ea580c","#334155"];
+const STATUS = {
+  pending:{label:"Pending",col:"var(--pend)"}, match:{label:"Matched",col:"var(--ok)"},
+  short:{label:"Short",col:"var(--short)"}, excess:{label:"Excess",col:"var(--over)"}
+};
+const FIELD_LABEL = {loc:"Location", bin:"Bin", remark:"Remark"};
+const today = () => new Date().toISOString().slice(0,10);
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = n => (Math.round(n*100)/100).toLocaleString();
+const catOf = code => { const p = String(code).split("-"); return p.length>1 ? p[0]+"-"+p[1] : p[0]; };
+const clone = o => o==null ? o : JSON.parse(JSON.stringify(o));
+function ago(t){ if(!t) return ""; const s=(Date.now()-t)/1000; if(s<45) return "just now"; if(s<3600) return Math.round(s/60)+"m ago"; if(s<86400) return Math.round(s/3600)+"h ago"; return new Date(t).toLocaleDateString([], {day:"numeric",month:"short"}); }
+
+const seedItems = rows => rows.map((r,i)=>({id:"i"+(i+1), sl:r[0]??i+1, code:r[1], desc:r[2], cb:+r[3]||0, unit:r[4]||"EACH", mfr:r[5]||"", model:r[6]||""}));
+const packItems = items => items.map(i=>[i.id,i.sl,i.code,i.desc,i.cb,i.unit,i.mfr,i.model]);
+const unpackItems = arr => arr.map(a=>({id:a[0],sl:a[1],code:a[2],desc:a[3],cb:+a[4]||0,unit:a[5]||"EACH",mfr:a[6]||"",model:a[7]||""}));
+const DEFAULT_META = {store:"RDP Building 03 Store", date:today(), ref:"", source:"RDP_Building_03_Store_Print.xlsx"};
+const DEFAULT_FIELDS = {loc:true, bin:true, remark:true};
+const DEFAULT_PREFS = {theme:"auto",accent:ACCENTS[0],density:"cozy",size:"normal",blind:false,autoNext:true,haptic:true,hideDone:false,sticky:true,myName:"",lastLoc:"",lastBin:"",pin:"",device:"",team:""};
+
+/* ---------------- state ---------------- */
+let L; try{ L = JSON.parse(localStorage.getItem(LSKEY)); }catch(e){ L=null; }
+L = L || {};
+const S = {
+  items: L.items ? L.items : seedItems(SEED),
+  meta: Object.assign({}, DEFAULT_META, L.meta||{}),
+  fields: Object.assign({}, DEFAULT_FIELDS, L.fields||{}),
+  counts: L.counts || {},
+  prefs: Object.assign({}, DEFAULT_PREFS, L.prefs||{})
+};
+// migrate v1 note → remark, auditor → myName
+for(const c of Object.values(S.counts)){ if(c.note && !c.remark){ c.remark=c.note; delete c.note; } }
+if(L.meta && L.meta.auditor && !S.prefs.myName) S.prefs.myName = L.meta.auditor;
+
+const ENV = {mode:"local", db:null, user:null, me:null, isAdmin:true, canWrite:true, names:{}, avatars:{}, cfgSeen:false};
+function saveLocal(){
+  try{
+    const o = {prefs:S.prefs};
+    if(ENV.mode==="local"){ o.items=S.items; o.meta=S.meta; o.fields=S.fields; o.counts=S.counts; }
+    else { const prev = L; o.items=prev.items; o.meta=prev.meta; o.fields=prev.fields; o.counts=prev.counts; }
+    localStorage.setItem(LSKEY, JSON.stringify(o));
+  }catch(e){}
+}
+function setLive(on, text){ const el=$("#live"); el.classList.toggle("on",on); el.querySelector("span").textContent=text; }
+function setSync(t){ $("#syncNote").textContent=t; }
+
+/* ---------------- cloud (shared, realtime) ---------------- */
+const writeChains = {};
+function chain(key, fn){ const p=(writeChains[key]||Promise.resolve()).then(fn,fn); writeChains[key]=p.catch(()=>{}); return p; }
+
+(async ()=>{
+  try{
+    if(!window.claude || !claude.use) return;
+    const [db, user] = await Promise.all([claude.use("db"), claude.use("user")]);
+    if(!db) return;
+    ENV.db=db; ENV.user=user;
+    if(user){
+      const me = await user.me(); ENV.me = me.id;
+      ENV.isAdmin = !!(me.isOwner || me.canEdit);
+      const cw = await user.can("data.write"); ENV.canWrite = cw!==false;
+      if(me.name && !S.prefs.myName){ S.prefs.myName = me.name; saveLocal(); }
+    }
+    ENV.mode="cloud"; setLive(false,"Connecting");
+    const timer=setTimeout(()=>{ setLive(false,"Offline"); setSync("Can't reach shared data yet — counts may be out of date"); },10000);
+    // config doc
+    db.doc("cfg/main").onSnapshot(snap=>{
+      const d = snap.exists ? snap.data() : null;
+      if(d){ applyCfgBody(d); } else if(ENV.isAdmin && !ENV.cfgSeen && !snap.metadata.fromCache){
+        writeCfg();   // first run: owner publishes the shared config
+      }
+      ENV.cfgSeen=true; renderAll();
+    }, err=>{});
+    // counts collection — everyone's counts, live
+    let migrated=false;
+    db.collection("counts").onSnapshot(snap=>{
+      clearTimeout(timer);
+      const m={}; snap.docs.forEach(d=>{ m[d.id]=clone(d.data()); });
+      // one-time: push counts saved on this device before sharing was on
+      if(!migrated && !snap.metadata.fromCache){
+        migrated=true;
+        if(snap.empty && ENV.isAdmin && L.counts && Object.keys(L.counts).length){
+          Object.entries(S.counts).forEach(([id,c])=>{ c.by=c.by||ENV.me; c.hist=c.hist||[]; m[id]=c; pushCount(id,c); });
+          toast("Uploaded your earlier counts to the shared audit");
+        }
+      }
+      S.counts=m; resolveNames(); render();
+      if(!snap.metadata.fromCache){ setLive(true,"Live"); setSync("Live · shared with everyone who has access"); }
+    }, err=>{ setLive(false,"Offline"); setSync("Shared data unavailable ("+err.code+") — reload to retry"); });
+    applyRoles(); render();
+  }catch(e){ ENV.mode="local"; setLive(false,"Local"); }
+})();
+
+
+function applyCfgBody(d){
+  S.meta = Object.assign({}, DEFAULT_META, d.meta||{});
+  S.fields = Object.assign({}, DEFAULT_FIELDS, d.fields||{});
+  if(Array.isArray(d.items) && d.items.length) S.items = unpackItems(d.items); else S.items = seedItems(SEED);
+}
+function cfgBody(){
+  const custom = !(S.items.length===SEED.length && S.items.every((it,i)=>it.id==="i"+(i+1)&&it.code===SEED[i][1]));
+  const body = {meta:S.meta, fields:S.fields, updated:Date.now(), by:ENV.me||""};
+  if(custom) body.items = packItems(S.items);
+  return body;
+}
+
+/* ---------------- Server mode: StockCount server (same Wi-Fi or online via tunnel) ---------------- */
+if(!S.prefs.device){ S.prefs.device = "d_"+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4); }
+const DEVICE = S.prefs.device;
+const PEND_KEY = LSKEY+".pending";
+let lanPending = {}; try{ lanPending = JSON.parse(localStorage.getItem(PEND_KEY))||{}; }catch(e){}
+const savePending = ()=>{ try{ localStorage.setItem(PEND_KEY, JSON.stringify(lanPending)); }catch(e){} };
+/* ---------------- Firebase realtime sync: works on any network, no server device ---------------- */
+const FB = {db:null};
+const clean = o => o==null ? null : JSON.parse(JSON.stringify(o));
+function normCount(b){ if(b && b.hist && !Array.isArray(b.hist)) b.hist=Object.values(b.hist); return b; }
+function fbErr(e){ const x=new Error((e&&e.message)||"sync error"); x.status = /permission/i.test(String((e&&(e.code||e.message))||"")) ? 403 : 0; return x; }
+const audit = () => FB.db.ref("audits/"+S.prefs.team);
+async function api(path, body){
+  const R = audit();
+  try{
+    if(path==="api/count"){ const ref=R.child("counts/"+body.id); await (body.body==null ? ref.remove() : ref.set(clean(body.body))); return {ok:true}; }
+    if(path==="api/state"){ const [c,k]=await Promise.all([R.child("cfg/body").get(), R.child("counts").get()]); const counts=k.val()||{}; Object.values(counts).forEach(normCount); return {cfg:c.val(), counts}; }
+    if(path==="api/pin"){ try{ await R.child("pinok").set({pin:String(body.pin), t:Date.now()}); return {ok:true}; }catch(e){ if(fbErr(e).status===403) return {ok:false}; throw e; } }
+    if(path==="api/cfg"){ await R.child("cfg").set({pin:String(body.pin||""), body:clean(body.cfg)}); ENV.cfgOnServer=true; return {ok:true}; }
+    if(path==="api/clear"){
+      await R.child("reset").set({pin:String(body.pin||""), at:Date.now()});
+      const ids=Object.keys((await R.child("counts").get()).val()||{});
+      if(ids.length){ const u={}; ids.forEach(i=>u[i]=null); await R.child("counts").update(u); }
+      return {ok:true};
+    }
+  }catch(e){ throw fbErr(e); }
+  throw new Error("unknown "+path);
+}
+function updateLanStatus(){
+  const n = Object.keys(lanPending).length, c = ENV.clients||1;
+  if(ENV.lanUp){ setLive(true, "Live"+(c>1?" · "+c:"")); setSync(n?`${n} change${n>1?"s":""} waiting to sync…`:`Live · ${c} device${c>1?"s":""} active · saved in the cloud`); }
+  else { setLive(false, ENV.needCode?"Locked":"Reconnecting"); setSync(ENV.needCode?"Enter the team code to join this audit":`No connection — ${n?n+" change"+(n>1?"s":"")+" kept on this phone, will sync when you're back online":"check your internet"}`); }
+}
+let flushing=false;
+async function flushPending(){
+  if(flushing || !S.prefs.team) return; flushing=true;
+  let ok=false;
+  try{
+    // one multi-path write for everything waiting (fast even for a whole resumed audit)
+    const ids=Object.keys(lanPending).slice(0,400);
+    if(ids.length){
+      const snap={}, u={}; ids.forEach(id=>{ snap[id]=lanPending[id]; u[id]=clean(lanPending[id]); });
+      try{ await audit().child("counts").update(u); ids.forEach(id=>{ if(lanPending[id]===snap[id]) delete lanPending[id]; }); savePending(); ok=true; }
+      catch(e){}
+    }
+  } finally { flushing=false; updateLanStatus(); }
+  if(ok && Object.keys(lanPending).length) setTimeout(flushPending, 30);   // pick up saves made meanwhile
+}
+async function lanSync(){
+  const st = await api("api/state");
+  ENV.cfgOnServer=!!st.cfg;
+  if(st.cfg) applyCfgBody(st.cfg); else if(ENV.isAdmin) writeCfg();
+  const m = st.counts||{};
+  for(const [id,b] of Object.entries(lanPending)){ if(b===null) delete m[id]; else m[id]=b; }
+  S.counts = m; ENV.needCode=false;
+  renderAll(); flushPending(); updateLanStatus();
+}
+let renderQ=0;
+const scheduleRender = ()=>{ if(renderQ) return; renderQ=setTimeout(()=>{ renderQ=0; render(); },60); };
+function loadScript(src){ return new Promise((ok,no)=>{ const s=document.createElement("script"); s.src=src; s.onload=ok; s.onerror=no; document.head.appendChild(s); }); }
+async function startLan(){
+  const C = window.STOCKCOUNT_FIREBASE;
+  if(ENV.mode!=="local") return;
+  if(!C || !C.databaseURL || /PASTE/i.test(C.databaseURL)){ setSync("Not connected yet — put your Firebase database URL in config.js (see SETUP.md)"); return; }
+  try{
+    const V="10.12.2";
+    if(!window.firebase){ await loadScript(`https://www.gstatic.com/firebasejs/${V}/firebase-app-compat.js`); await loadScript(`https://www.gstatic.com/firebasejs/${V}/firebase-database-compat.js`); }
+    firebase.initializeApp(C); FB.db=firebase.database();
+    if(C.emulator) FB.db.useEmulator(C.emulator.host, C.emulator.port);
+  }catch(e){ setLive(false,"Offline"); setSync("Couldn't load the sync library — check your internet and reload"); return; }
+  ENV.mode="lan"; ENV.me=DEVICE; ENV.isAdmin=false; ENV.canWrite=true; ENV.online=true;
+  saveLocal(); applyRoles(); setLive(false,"Connecting");
+  FB.db.ref(".info/connected").on("value", s=>{ ENV.lanUp=!!s.val(); if(ENV.lanUp) flushPending(); updateLanStatus(); });
+  setInterval(()=>{ if(ENV.lanUp && Object.keys(lanPending).length) flushPending(); }, 5000);
+  if(!S.prefs.team) askCode(); else { await joinLive(); if(!S.prefs.myName) setTimeout(askName, 400); }
+}
+let liveOff=null;
+async function joinLive(){
+  liveOff && liveOff(); liveOff=null;
+  const R=audit();
+  try{ await lanSync(); }catch(e){ if(e.status===403){ ENV.needCode=true; S.prefs.team=""; saveLocal(); updateLanStatus(); askCode("That audit no longer exists — enter a new team code."); return; } }
+  ENV.isAdmin=false;
+  if(S.prefs.pin){ try{ ENV.isAdmin=(await api("api/pin",{pin:S.prefs.pin})).ok; }catch(e){} }
+  applyRoles(); render();
+  const counts=R.child("counts");
+  const onC=s=>{ if(lanPending[s.key]!==undefined) return; S.counts[s.key]=normCount(s.val()); scheduleRender(); };
+  const onR=s=>{ if(lanPending[s.key]!==undefined) return; delete S.counts[s.key]; scheduleRender(); };
+  counts.on("child_added",onC); counts.on("child_changed",onC); counts.on("child_removed",onR);
+  const cfgRef=R.child("cfg/body"), onCfg=s=>{ const v=s.val(); if(v){ ENV.cfgOnServer=true; applyCfgBody(v); renderAll(); } };
+  cfgRef.on("value",onCfg);
+  let firstReset=true; const resetRef=R.child("reset/at");
+  const onReset=()=>{ if(firstReset){ firstReset=false; return; } lanPending={}; savePending(); undoStack.length=0; if(!ENV.isAdmin) toast("The owner cleared all counts"); };
+  resetRef.on("value",onReset);
+  const me=R.child("presence/"+DEVICE), pres=R.child("presence"), conn=FB.db.ref(".info/connected");
+  const onConn=s=>{ if(s.val()){ me.onDisconnect().remove(); me.set({name:S.prefs.myName||"", t:firebase.database.ServerValue.TIMESTAMP}).catch(()=>{}); } };
+  conn.on("value",onConn);
+  const onP=s=>{ ENV.clients=Math.max(1,s.numChildren()); updateLanStatus(); if(view==="dash") renderDash(stats()); };
+  pres.on("value",onP);
+  liveOff=()=>{ counts.off(); cfgRef.off("value",onCfg); resetRef.off("value",onReset); conn.off("value",onConn); pres.off("value",onP); me.remove().catch(()=>{}); };
+}
+function randCode(n, A){ const r=new Uint32Array(n); crypto.getRandomValues(r); return Array.from(r,v=>A[v%A.length]).join(""); }
+async function createAudit(name){
+  let code="";
+  const pin=randCode(4,"0123456789");
+  for(let i=0;i<5;i++){ code=randCode(6,"ABCDEFGHJKMNPQRSTUVWXYZ23456789"); try{ await FB.db.ref("secrets/"+code).set(pin); break; }catch(e){ code=""; } }
+  if(!code) throw new Error("Couldn't create the audit — check your internet.");
+  S.prefs.team=code; S.prefs.pin=pin; S.prefs.myName=name; ENV.isAdmin=true; ENV.needCode=false; saveLocal();
+  await api("api/cfg",{pin, cfg:cfgBody()});
+  return {code, pin};
+}
+function askCode(msg){
+  if($("#sheet").classList.contains("on") && $("#tcCode")) return;
+  openSheet(`<h3>Join a stock count</h3><p style="color:var(--ink2)">${esc(msg||"Enter the team code from the audit owner. It keeps strangers out of your count.")}</p>
+    <div class="field"><input id="tcCode" placeholder="e.g. K7Q2M9" autocapitalize="characters" autocomplete="off" style="font-size:22px;letter-spacing:.2em;text-align:center;text-transform:uppercase"></div>
+    <div class="field"><input id="tcName" placeholder="Your name (shown on your counts)" value="${esc(S.prefs.myName||"")}"></div>
+    <button class="btn pri block" id="tcGo">Join audit</button><div id="tcErr" style="color:var(--short);font-size:13px;margin-top:8px"></div>
+    <div style="text-align:center;margin-top:18px;font-size:13px;color:var(--ink3)">Running the audit yourself?</div>
+    <button class="btn block" id="tcNew" style="margin-top:6px">＋ Start a new audit (owner)</button>`);
+  setTimeout(()=>$("#tcCode")?.focus(),300);
+  const name=()=>{ const v=$("#tcName").value.trim(); if(!v){ $("#tcName").focus(); $("#tcErr").textContent="Enter your name first."; } return v; };
+  $("#tcGo").onclick=async()=>{
+    const code=$("#tcCode").value.trim().toUpperCase(); if(!code){ $("#tcCode").focus(); return; }
+    const nm=name(); if(!nm) return;
+    try{
+      const ok=(await FB.db.ref("audits/"+code+"/cfg/body").get()).exists();
+      if(!ok){ $("#tcErr").textContent="That code isn't right — check with the owner."; return; }
+    }catch(e){ $("#tcErr").textContent = fbErr(e).status===403 ? "That code isn't right — check with the owner." : "Can't connect — check your internet."; return; }
+    S.prefs.team=code; S.prefs.myName=nm; S.prefs.pin=""; ENV.needCode=false; saveLocal(); applyPrefs(); closeSheet();
+    await joinLive(); toast("Joined — counts sync live");
+  };
+  $("#tcNew").onclick=async()=>{
+    const nm=name(); if(!nm) return;
+    $("#tcNew").disabled=true;
+    try{
+      const {code,pin}=await createAudit(nm);
+      await joinLive();
+      openSheet(`<h3>Your audit is ready</h3><p style="color:var(--ink2)">Share the link and team code with colleagues. Keep the owner PIN to yourself — you need it to unlock owner controls on another phone.</p>
+        <div style="font-size:13px;color:var(--ink2)">Team code</div><div class="mono" style="font-size:30px;font-weight:800;letter-spacing:.2em">${code}</div>
+        <div style="font-size:13px;color:var(--ink2);margin-top:10px">Owner PIN (write it down)</div><div class="mono" style="font-size:30px;font-weight:800;letter-spacing:.2em">${pin}</div>
+        <button class="btn pri block" id="tcInv" style="margin-top:16px">⧉ Copy invite message</button><button class="btn block" id="tcDone" style="margin-top:8px">Start counting</button>`);
+      $("#tcInv").onclick=()=>$("#btnInvite").click(); $("#tcDone").onclick=closeSheet;
+    }catch(e){ $("#tcErr").textContent=e.message||"Couldn't create the audit."; $("#tcNew").disabled=false; }
+  };
+}
+function askName(){
+  openSheet(`<h3>What's your name?</h3><p style="color:var(--ink2)">It's shown next to every count you make, so the team can see who counted what.</p>
+    <div class="field"><input id="anName" placeholder="e.g. Ahmed" autocomplete="name"></div><button class="btn pri block" id="anGo">Start counting</button>`);
+  setTimeout(()=>$("#anName")?.focus(),300);
+  $("#anGo").onclick=()=>{ const v=$("#anName").value.trim(); if(!v){ $("#anName").focus(); return; } S.prefs.myName=v; saveLocal(); applyPrefs(); closeSheet(); render(); };
+}
+
+function writeCfg(){
+  if(ENV.mode==="lan"){ saveLocal(); return api("api/cfg",{pin:S.prefs.pin, cfg:cfgBody()}).catch(e=>toast(e.status===403?"Wrong owner PIN — settings not saved":"Couldn't save settings — check your internet")); }
+  if(ENV.mode!=="cloud") { saveLocal(); return; }
+  const body = cfgBody();
+  return chain("cfg", ()=>ENV.db.doc("cfg/main").set(body)).catch(e=>toast(e.code==="quota_exceeded"?"Item list too large to share":"Couldn't save settings"));
+}
+function pushCount(id, body){
+  if(ENV.mode==="lan"){ saveLocal(); lanPending[id]=body; savePending(); updateLanStatus(); return flushPending(); }
+  if(ENV.mode!=="cloud"){ saveLocal(); return Promise.resolve(); }
+  const ref = ENV.db.collection("counts").doc(id);
+  return chain(id, ()=> body ? ref.set(body) : ref.delete()).catch(e=>{
+    if(e && e.code==="invalid_argument"){ ENV.canWrite=false; applyRoles(); toast("You have view-only access — ask the owner for edit access"); }
+    else toast("Couldn't save — check your connection");
+  });
+}
+
+/* ---------------- names ---------------- */
+let namesBusy=false;
+async function resolveNames(){
+  if(!ENV.user || namesBusy) return;
+  const ids=new Set(); Object.values(S.counts).forEach(c=>{ if(c.by) ids.add(c.by); (c.hist||[]).forEach(h=>h.by&&ids.add(h.by)); });
+  if(ENV.me) ids.add(ENV.me);
+  const list=[...ids]; if(!list.length) return;
+  namesBusy=true;
+  try{
+    const ps=await ENV.user.profiles(list); let changed=false;
+    for(const id of list){ const p=ps[id]; if(!p) continue; if(ENV.names[id]!==p.name){ ENV.names[id]=p.name; changed=true; } ENV.avatars[id]=p.avatarUrl; }
+    if(changed) render();
+  }catch(e){} namesBusy=false;
+}
+function nameOf(id, fallback){ if(!id && !fallback) return "—"; const n = ENV.names[id] || fallback || ""; if(id && id===ENV.me) return n ? n+" (you)" : "You"; return n || "Someone"; }
+function avatarOf(id, label){
+  const s=(label||"?").replace(/\(you\)/,"").trim(); const ini=s.split(/\s+/).map(w=>w[0]).join("").slice(0,2).toUpperCase()||"?";
+  let h=0; for(const ch of (id||s)) h=(h*31+ch.charCodeAt(0))%360;
+  return `<span class="av" style="display:inline-grid;place-items:center;font-size:10px;font-weight:700;color:#fff;background:hsl(${h} 45% 45%)">${esc(ini)}</span>`;
+}
+
+/* ---------------- derived ---------------- */
+function statusOf(it){
+  const c = S.counts[it.id]; if(!c || c.ab===null || c.ab===undefined) return "pending";
+  return c.ab===it.cb ? "match" : (c.ab<it.cb ? "short" : "excess");
+}
+function stats(){
+  const st={total:S.items.length,pending:0,match:0,short:0,excess:0,counted:0,flagged:0,bookQty:0,physQty:0,shortQty:0,excessQty:0,cats:{},people:{}};
+  for(const it of S.items){
+    const s=statusOf(it), c=S.counts[it.id];
+    st[s]++; st.bookQty+=it.cb; if(c&&c.flag) st.flagged++;
+    if(s!=="pending"){ st.counted++; st.physQty+=c.ab; const d=c.ab-it.cb; if(d<0) st.shortQty-=d; if(d>0) st.excessQty+=d;
+      const k=c.by||("name:"+(c.byName||"?")); const p=st.people[k] ??= {id:c.by, name:c.byName, n:0, match:0, last:0}; p.n++; if(s==="match") p.match++; if(c.t>p.last){ p.last=c.t; if(c.byName) p.name=c.byName; } }
+    const k=catOf(it.code); st.cats[k] ??= {n:0,done:0,match:0,short:0,excess:0}; st.cats[k].n++;
+    if(s!=="pending"){ st.cats[k].done++; st.cats[k][s]++; }
+  }
+  st.pct=st.total?st.counted/st.total*100:0; st.acc=st.counted?st.match/st.counted*100:0;
+  return st;
+}
+function allHistory(){
+  const out=[]; const byId=Object.fromEntries(S.items.map(i=>[i.id,i]));
+  for(const [id,c] of Object.entries(S.counts)){ const it=byId[id]; if(!it) continue; (c.hist||[]).forEach(h=>out.push({...h, it})); }
+  return out.sort((a,b)=>b.t-a.t);
+}
+
+/* ---------------- prefs / roles ---------------- */
+const mq = matchMedia("(prefers-color-scheme: dark)");
+function applyPrefs(){
+  const p=S.prefs, root=document.documentElement;
+  root.dataset.theme = p.theme==="auto" ? (mq.matches?"dark":"light") : p.theme;
+  root.dataset.density=p.density; root.dataset.size=p.size;
+  root.style.setProperty("--accent", p.accent);
+  document.querySelector('meta[name=theme-color]').content=p.accent;
+  document.querySelectorAll("[data-tog]").forEach(el=>el.querySelector(".sw").classList.toggle("on", !!p[el.dataset.tog]));
+  document.querySelectorAll("[data-field]").forEach(el=>el.querySelector(".sw").classList.toggle("on", !!S.fields[el.dataset.field]));
+  document.querySelectorAll("[data-seg]").forEach(g=>g.querySelectorAll("button").forEach(b=>b.classList.toggle("on", b.dataset.v===p[g.dataset.seg])));
+  $("#swatches").innerHTML = ACCENTS.map(c=>`<button style="background:${c}" data-acc="${c}" class="${c===p.accent?"on":""}" aria-label="Accent ${c}"></button>`).join("");
+  $("#sMyName").value = p.myName||"";
+}
+mq.addEventListener?.("change", applyPrefs);
+function applyRoles(){
+  document.querySelectorAll(".localonly").forEach(el=>el.classList.toggle("hide", ENV.mode!=="local"));
+  document.querySelectorAll(".cloudonly").forEach(el=>el.classList.toggle("hide", ENV.mode!=="cloud"));
+  document.querySelectorAll(".lanonly").forEach(el=>el.classList.toggle("hide", ENV.mode!=="lan"));
+  if($("#invLink")){ $("#invLink").textContent=location.origin+location.pathname; $("#invCode").textContent=S.prefs.team||"—";
+    $("#invNote").textContent = "Works from any network — Wi-Fi or mobile data."; }
+  if($("#pinState")) $("#pinState").textContent = ENV.isAdmin ? "✅ Owner controls unlocked on this device" : "Enter the owner PIN to unlock owner controls (count fields, import, clear).";
+  const admin = ENV.isAdmin && ENV.canWrite;
+  document.querySelectorAll(".adm").forEach(el=>el.classList.toggle("hide", !admin));
+  document.querySelectorAll(".ctr").forEach(el=>el.classList.toggle("hide", !ENV.canWrite));
+  $("#fieldGroup").querySelectorAll(".set").forEach(el=>el.classList.toggle("dis", !admin));
+  $("#fieldsLock").classList.toggle("hide", admin); $("#metaLock").classList.toggle("hide", admin);
+  ["#sStore","#sDate","#sRef"].forEach(s=>$(s).disabled=!admin);
+  $("#fab").classList.toggle("hide", !ENV.canWrite || view==="more");
+  $("#roBanner").innerHTML = ENV.canWrite ? "" : `<div class="banner">👀 <div><b>View-only access.</b> You can watch the count live and export, but not change counts. Ask the owner to share with <b>Can edit</b>.</div></div>`;
+}
+
+/* ---------------- navigation ---------------- */
+let view="dash";
+function go(v){
+  view=v;
+  document.querySelectorAll(".view").forEach(s=>s.classList.toggle("on", s.id==="v-"+v));
+  document.querySelectorAll(".nav button").forEach(b=>b.classList.toggle("on", b.dataset.go===v));
+  $("#fab").classList.toggle("hide", v==="more" || !ENV.canWrite);
+  window.scrollTo({top:0}); render();
+}
+
+/* ---------------- charts ---------------- */
+function ring(pct,size=96,stroke=10){
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:conic-gradient(var(--accent) ${pct}%,var(--surface2) 0);display:grid;place-items:center;transition:background .4s"><div style="width:${size-2*stroke}px;height:${size-2*stroke}px;border-radius:50%;background:var(--surface);display:grid;place-items:center;font-size:20px;font-weight:800">${Math.round(pct)}%</div></div>`; }
+function donut(parts,size=120,stroke=18){
+  const tot=parts.reduce((a,p)=>a+p.v,0)||1; let acc=0; const stops=[];
+  parts.filter(p=>p.v>0).forEach(p=>{ const a=acc/tot*100, b=(acc+p.v)/tot*100; stops.push(`${p.col} ${a}% ${b}%`); acc+=p.v; });
+  const bg = stops.length ? `conic-gradient(${stops.join(",")})` : "var(--surface2)";
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${bg};display:grid;place-items:center"><div style="width:${size-2*stroke}px;height:${size-2*stroke}px;border-radius:50%;background:var(--surface);display:flex;flex-direction:column;align-items:center;justify-content:center"><b style="font-size:22px;font-weight:800;line-height:1">${S.items.length}</b><span style="font-size:10.5px;color:var(--ink3);font-weight:600;margin-top:2px">ITEMS</span></div></div>`; }
+
+/* ---------------- dashboard ---------------- */
+function renderDash(st){
+  $("#ring").innerHTML=ring(st.pct);
+  $("#dPct").textContent=st.counted+" / "+st.total;
+  $("#dSub").textContent=st.pending?`${st.pending} item${st.pending>1?"s":""} still to count`:"All items counted 🎉";
+  const ts=Object.values(S.counts).map(c=>c.t).filter(Boolean).sort((a,b)=>a-b); let eta="";
+  if(ts.length>=5&&st.pending){ const span=(ts[ts.length-1]-ts[0])/60000; if(span>1){ const rate=(ts.length-1)/span, mins=Math.ceil(st.pending/rate);
+    eta=`<span class="tag">⚡ ${rate.toFixed(1)}/min</span><span class="tag">⏱ ~${mins<60?mins+" min":(mins/60).toFixed(1)+" h"} left</span>`; } }
+  $("#dEta").innerHTML = eta+`<span class="tag">📅 ${esc(S.meta.date||"")}</span>`;
+  const k=[["match","Matched",st.match,st.counted?`${st.acc.toFixed(1)}% accuracy`:"of counted"],["short","Short",st.short,`−${fmt(st.shortQty)} units`],["excess","Excess",st.excess,`+${fmt(st.excessQty)} units`],["pending","Pending",st.pending,`${st.flagged} flagged`]];
+  $("#kpis").innerHTML=k.map(([s,l,v,sub])=>`<div class="kpi" data-filter="${s}"><div class="l"><span class="dot" style="background:${STATUS[s].col}"></span>${l}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`).join("");
+  // team
+  const people=Object.values(st.people).sort((a,b)=>b.n-a.n);
+  const activeNow=people.filter(p=>Date.now()-p.last<10*60000).length;
+  $("#teamNote").textContent = people.length ? `${people.length} counter${people.length>1?"s":""}${activeNow?` · ${activeNow} active now`:""}` : "";
+  const maxN=Math.max(1,...people.map(p=>p.n));
+  $("#team").innerHTML = people.length ? people.map(p=>{ const nm=nameOf(p.id,p.name); const on=Date.now()-p.last<10*60000;
+    return `<div class="team-row" data-by="${esc(p.id||"name:"+p.name)}">${avatarOf(p.id,nm).replace('class="av"','class="av lg"')}<div class="m"><b>${esc(nm)} ${on?'<span class="live on" style="padding:1px 6px;font-size:10px"><i></i>active</span>':""}</b><span>${p.n?Math.round(p.match/p.n*100):0}% matched · last ${ago(p.last)}</span><div class="minibar"><i style="width:${p.n/maxN*100}%"></i></div></div><div class="n">${p.n}<small>ITEMS</small></div></div>`; }).join("")
+    : `<div class="empty" style="padding:22px">${ENV.mode==="lan"?"No counts yet. Share the link and team code with colleagues — their counts appear here live.":ENV.mode==="cloud"?"No counts yet. Invite colleagues with <b>Can edit</b> access — their work appears here live.":"Counts are saved on this device. Open the shared link to count as a team."}</div>`;
+  // activity
+  const hist=allHistory().slice(0,8);
+  $("#activity").innerHTML = hist.length ? hist.map(feedRow).join("") : `<div class="empty" style="padding:22px">Changes from everyone will stream in here.</div>`;
+  const parts=["match","short","excess","pending"].map(s=>({v:st[s],col:STATUS[s].col,s}));
+  $("#donut").innerHTML=donut(parts);
+  $("#legend").innerHTML=parts.map(p=>`<div><span class="dot" style="background:${p.col}"></span>${STATUS[p.s].label}<b>${p.v}</b><span style="color:var(--ink3);width:40px;text-align:right">${st.total?Math.round(p.v/st.total*100):0}%</span></div>`).join("")+`<div style="border-top:1px solid var(--line);padding-top:8px;color:var(--ink2)">Book qty<b>${fmt(st.bookQty)}</b></div>`;
+  const ins=[]; const net=st.excessQty-st.shortQty;
+  if(!st.counted) ins.push(["🚀","var(--accent-soft)","Ready to start","Tap Quick count for a fast keypad, or use the Count tab for the full list."]);
+  else{
+    ins.push([st.acc>=95?"🏆":st.acc>=85?"👍":"⚠️",st.acc>=95?"var(--ok-soft)":st.acc>=85?"var(--over-soft)":"var(--short-soft)",`Inventory record accuracy ${st.acc.toFixed(1)}%`,`${st.match} of ${st.counted} counted lines match the book. ${st.acc>=95?"Above the 95% best-practice benchmark.":"Best practice targets 95%+."}`]);
+    ins.push([net<0?"📉":net>0?"📈":"⚖️","var(--surface2)",`Net variance ${net>0?"+":""}${fmt(net)} units`,`Shortages −${fmt(st.shortQty)} vs excess +${fmt(st.excessQty)} across counted items.`]);
+    const worst=Object.entries(st.cats).filter(([,c])=>c.done>=3).map(([k,c])=>[k,(c.short+c.excess)/c.done]).sort((a,b)=>b[1]-a[1])[0];
+    if(worst&&worst[1]>0) ins.push(["🎯","var(--over-soft)",`Watch ${worst[0]}`,`${Math.round(worst[1]*100)}% of counted lines here have a variance — consider a recount.`]);
+    const recounted=Object.values(S.counts).filter(c=>(c.hist||[]).length>1).length;
+    if(recounted) ins.push(["🔁","var(--surface2)",`${recounted} item${recounted>1?"s were":" was"} changed after first count`,"Open an item to see who changed it and when."]);
+  }
+  if(st.flagged) ins.push(["🚩","color-mix(in srgb,var(--flag) 15%,transparent)",`${st.flagged} item${st.flagged>1?"s":""} flagged for review`,"Listed in the export with remarks."]);
+  $("#insights").innerHTML=ins.map(([ic,bg,b,s])=>`<div class="insight"><div class="ic" style="background:${bg}">${ic}</div><div><b>${b}</b><span>${s}</span></div></div>`).join("");
+  $("#cats").innerHTML=Object.entries(st.cats).sort((a,b)=>b[1].n-a[1].n).map(([k,c])=>{const w=s=>(c[s]/c.n*100)+"%";
+    return `<div class="bar-row" data-cat="${esc(k)}"><span class="n mono">${esc(k)}</span><div class="bar"><i style="width:${w("match")};background:var(--ok)"></i><i style="width:${w("short")};background:var(--short)"></i><i style="width:${w("excess")};background:var(--over)"></i></div><span class="p">${c.done}/${c.n}</span></div>`;}).join("");
+  const tv=varianceItems().slice(0,5);
+  $("#topVar").innerHTML=tv.length?tv.map(varRow).join(""):`<div class="empty" style="padding:24px">No variances yet</div>`;
+  $("#dFoot").textContent=`Source: ${S.meta.source||"—"} · ${S.items.length} items`;
+}
+function feedRow(h){
+  const nm=nameOf(h.by,h.byName);
+  const what = h.ab==null ? "cleared the count" : (h.prev==null ? `counted <b>${fmt(h.ab)}</b>` : (h.prev!==h.ab ? `changed <b>${fmt(h.prev)} → ${fmt(h.ab)}</b>` : "updated details"));
+  const extra=[h.loc&&S.fields.loc?"📍"+h.loc:"", h.bin&&S.fields.bin?"🗄"+h.bin:""].filter(Boolean).join(" ");
+  return `<div class="feed" data-open="${h.it.id}">${avatarOf(h.by,nm)}<div class="x"><b>${esc(nm)}</b> ${what}<span class="d mono">${esc(h.it.code)} · ${esc(h.it.desc)} ${esc(extra)}</span></div><span class="t">${ago(h.t)}</span></div>`;
+}
+function varianceItems(){ return S.items.filter(it=>{const s=statusOf(it);return s==="short"||s==="excess";}).map(it=>({it,d:S.counts[it.id].ab-it.cb})).sort((a,b)=>Math.abs(b.d)-Math.abs(a.d)||a.d-b.d); }
+function varRow({it,d}){ const s=statusOf(it),c=S.counts[it.id];
+  return `<div class="var-row" data-open="${it.id}"><span class="dot" style="background:${STATUS[s].col}"></span><div class="m"><b>${esc(it.desc)}</b><span class="mono">${esc(it.code)}</span> <span>· ${it.cb} → ${c.ab} · ${esc(nameOf(c.by,c.byName))}${c.flag?' · <span class="flag-ic">⚑</span>':""}</span></div><div class="q" style="color:${STATUS[s].col}">${d>0?"+":""}${fmt(d)}<small>${esc(it.unit)}</small></div></div>`; }
+
+/* ---------------- count list ---------------- */
+const F={q:"",status:"all",cat:"all",sort:"sl",by:"all"};
+function byKey(c){ return c ? (c.by || "name:"+(c.byName||"?")) : ""; }
+function filtered(){
+  const q=F.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const arr=S.items.filter(it=>{ const s=statusOf(it), c=S.counts[it.id];
+    if(F.status==="flag"){ if(!(c&&c.flag)) return false; } else if(F.status!=="all" && s!==F.status) return false;
+    if(F.status==="all" && S.prefs.hideDone && s==="match") return false;
+    if(F.cat!=="all" && catOf(it.code)!==F.cat) return false;
+    if(F.by!=="all"){ if(!c || c.ab==null) return false; if(F.by==="me" ? c.by!==ENV.me : byKey(c)!==F.by) return false; }
+    if(q.length){ const hay=(it.code+" "+it.desc+" "+it.mfr+" "+it.model+" "+it.sl+" "+(c?.remark||"")+" "+(c?.loc||"")+" "+(c?.bin||"")+" "+(c?nameOf(c.by,c.byName):"")).toLowerCase(); if(!q.every(w=>hay.includes(w))) return false; }
+    return true; });
+  const vr=it=>{const c=S.counts[it.id]; return statusOf(it)!=="pending"?Math.abs(c.ab-it.cb):-1;};
+  const by={sl:(a,b)=>(+a.sl||0)-(+b.sl||0), code:(a,b)=>a.code.localeCompare(b.code), desc:(a,b)=>a.desc.localeCompare(b.desc), cb:(a,b)=>b.cb-a.cb,
+    var:(a,b)=>vr(b)-vr(a), recent:(a,b)=>(S.counts[b.id]?.t||0)-(S.counts[a.id]?.t||0),
+    bin:(a,b)=>{const ka=(S.counts[a.id]?.loc||"~")+"|"+(S.counts[a.id]?.bin||"~"), kb=(S.counts[b.id]?.loc||"~")+"|"+(S.counts[b.id]?.bin||"~"); return ka.localeCompare(kb,undefined,{numeric:true});}};
+  return arr.sort(by[F.sort]);
+}
+function itemHTML(it){
+  const s=statusOf(it), c=S.counts[it.id]||{}, blind=S.prefs.blind&&s==="pending", ro=!ENV.canWrite;
+  const ab=c.ab==null?"":c.ab, d=s!=="pending"?c.ab-it.cb:null;
+  const pins=[S.fields.loc&&c.loc?`<span class="pin">📍 ${esc(c.loc)}</span>`:"", S.fields.bin&&c.bin?`<span class="pin">🗄 ${esc(c.bin)}</span>`:""].join("");
+  const nm = c.ab!=null ? nameOf(c.by,c.byName) : "";
+  return `<div class="item" data-s="${s}" data-id="${it.id}">
+    <div class="h" data-open="${it.id}"><span class="sl">${esc(it.sl)}</span>
+      <div style="flex:1;min-width:0"><div class="code mono">${esc(it.code)} ${c.flag?'<span class="flag-ic">⚑</span>':""}</div><div class="desc">${esc(it.desc)}</div>
+      <div class="meta">${esc([it.mfr,it.model].filter(x=>x&&String(x).toUpperCase()!=="NA").join(" · ")||"—")}</div></div>
+      <span class="badge b-${s}">${STATUS[s].label}</span></div>
+    <div class="ctl">
+      <div class="cb"><small>BOOK</small><b>${blind?"•••":fmt(it.cb)}</b></div>
+      <div class="step"><button data-dec="${it.id}" ${ro?"disabled":""} aria-label="minus">−</button><input data-ab="${it.id}" ${ro?"disabled":""} inputmode="decimal" enterkeyhint="next" placeholder="Physical" value="${ab}"><button data-inc="${it.id}" ${ro?"disabled":""} aria-label="plus">+</button></div>
+      ${S.prefs.blind||ro?"":`<button class="okbtn" data-match="${it.id}" aria-label="Matches book"><span class="gl">✓</span>${fmt(it.cb)}</button>`}
+    </div>
+    ${d!==null&&d!==0?`<div class="var" style="color:${STATUS[s].col}">Variance ${d>0?"+":""}${fmt(d)} ${esc(it.unit)}</div>`:""}
+    ${nm||pins?`<div class="who">${nm?`${avatarOf(c.by,nm)}<span class="nm">${esc(nm)}</span><span class="tm">${ago(c.t)}${(c.hist||[]).length>1?` · ${(c.hist||[]).length} edits`:""}</span>`:""}${pins}</div>`:""}
+    ${S.fields.remark&&c.remark?`<div class="note-line">📝 ${esc(c.remark)}</div>`:""}
+  </div>`;
+}
+let listDirty=false;
+function renderCount(st){
+  const sc=[["all","All",st.total],["pending","Pending",st.pending],["match","Matched",st.match],["short","Short",st.short],["excess","Excess",st.excess],["flag","⚑ Flagged",st.flagged]];
+  $("#fStatus").innerHTML=sc.map(([k,l,n])=>`<button class="chip ${F.status===k?"on":""}" data-fs="${k}">${l}<span class="c">${n}</span></button>`).join("");
+  const cats=Object.keys(st.cats).sort();
+  $("#fCat").innerHTML=`<button class="chip ${F.cat==="all"?"on":""}" data-fc="all">All categories</button>`+cats.map(k=>`<button class="chip mono ${F.cat===k?"on":""}" data-fc="${esc(k)}">${esc(k)}<span class="c">${st.cats[k].done}/${st.cats[k].n}</span></button>`).join("");
+  const people=Object.entries(st.people).sort((a,b)=>b[1].n-a[1].n);
+  $("#fBy").innerHTML=`<option value="all">By: anyone</option>`+(ENV.me?`<option value="me">By: me</option>`:"")+people.filter(([k])=>k!==ENV.me).map(([k,p])=>`<option value="${esc(k)}">By: ${esc(nameOf(p.id,p.name))}</option>`).join("");
+  $("#fBy").value=F.by; if($("#fBy").value!==F.by){ F.by="all"; $("#fBy").value="all"; }
+  $("#sort").value=F.sort;
+  const ae=document.activeElement;
+  if(ae && ae.closest && ae.closest("#list") && ae.matches("input")){ listDirty=true; return; }
+  listDirty=false;
+  const arr=filtered();
+  $("#lCount").textContent=`${arr.length} item${arr.length!==1?"s":""}`;
+  $("#list").innerHTML=arr.length?arr.map(itemHTML).join(""):`<div class="empty"><div class="e">🔍</div>No items match your filters</div>`;
+}
+$("#list").addEventListener("focusout",()=>setTimeout(()=>{ if(listDirty && view==="count") renderCount(stats()); },60));
+function refreshItem(id){
+  const el=document.querySelector(`.item[data-id="${id}"]`), it=S.items.find(i=>i.id===id);
+  if(el&&it&&document.activeElement?.dataset?.ab!==id) el.outerHTML=itemHTML(it);
+  renderHeader(stats());
+}
+$("#q").addEventListener("input",e=>{ F.q=e.target.value; $("#qClear").classList.toggle("hide",!F.q); renderCount(stats()); });
+$("#qClear").onclick=()=>{ F.q=""; $("#q").value=""; $("#qClear").classList.add("hide"); renderCount(stats()); };
+$("#sort").onchange=e=>{ F.sort=e.target.value; renderCount(stats()); };
+$("#fBy").onchange=e=>{ F.by=e.target.value; renderCount(stats()); };
+
+/* ---------------- mutations + history ---------------- */
+const undoStack=[];
+function stickyLB(){ return S.prefs.sticky ? {loc:S.fields.loc?S.prefs.lastLoc:"", bin:S.fields.bin?S.prefs.lastBin:""} : {loc:"",bin:""}; }
+/** Apply a change to one item: patch = {ab?, loc?, bin?, remark?, flag?}. Records who/when in history. */
+function applyChange(id, patch, opts={}){
+  if(!ENV.canWrite){ toast("View-only access"); return; }
+  const prev=clone(S.counts[id]||null);
+  const c=clone(prev)||{};
+  const hadAb = c.ab!=null;
+  // first count picks up sticky location/bin
+  if("ab" in patch && !hadAb && patch.ab!=null){ const sb=stickyLB(); if(!c.loc && sb.loc && !("loc" in patch)) c.loc=sb.loc; if(!c.bin && sb.bin && !("bin" in patch)) c.bin=sb.bin; }
+  Object.assign(c, patch);
+  if(c.ab==null) delete c.ab;
+  ["loc","bin","remark"].forEach(k=>{ if(c[k]!=null) c[k]=String(c[k]).trim(); if(!c[k]) delete c[k]; });
+  if(!c.flag) delete c.flag;
+  const changedAb = (prev?.ab ?? null) !== (c.ab ?? null);
+  const changedMeta = ["loc","bin","remark","flag"].some(k=>(prev?.[k]??"")!==(c[k]??""));
+  if(!changedAb && !changedMeta){ if(!opts.silent) toast("No changes"); return; }
+  const now=Date.now();
+  c.t=now; c.by=ENV.me||c.by||""; c.byName=S.prefs.myName||"";
+  c.hist=(c.hist||[]).concat([{t:now, by:ENV.me||"", byName:S.prefs.myName||"", ab:c.ab??null, prev:prev?.ab??null, loc:c.loc||"", bin:c.bin||"", remark:c.remark||""}]).slice(-25);
+  const empty = c.ab==null && !c.loc && !c.bin && !c.remark && !c.flag;
+  const body = empty ? null : c;
+  if(body) S.counts[id]=body; else delete S.counts[id];
+  if(c.loc) S.prefs.lastLoc=c.loc; if(c.bin) S.prefs.lastBin=c.bin;
+  undoStack.push({id,prev}); if(undoStack.length>50) undoStack.shift();
+  saveLocal(); pushCount(id, body); buzz();
+  if(!opts.silent){ const it=S.items.find(i=>i.id===id); toast(changedAb ? (c.ab==null?`Cleared ${it.code}`:`${it.code} → ${fmt(c.ab)} (${STATUS[statusOf(it)].label})`) : `Saved ${it.code}`, true); }
+}
+const setAB=(id,v,o)=>applyChange(id,{ab:v},o);
+function undo(){ const u=undoStack.pop(); if(!u) return; if(u.prev) S.counts[u.id]=u.prev; else delete S.counts[u.id]; saveLocal(); pushCount(u.id,u.prev); render(); if($("#focus").classList.contains("on")) renderFocus(); hideToast(); }
+function buzz(){ if(S.prefs.haptic&&navigator.vibrate) try{navigator.vibrate(12);}catch(e){} }
+let toastT;
+function toast(msg,withUndo){ $("#toastMsg").textContent=msg; $("#toastUndo").classList.toggle("hide",!withUndo); $("#toast").classList.add("on"); clearTimeout(toastT); toastT=setTimeout(hideToast,2800); }
+function hideToast(){ $("#toast").classList.remove("on"); }
+$("#toastUndo").onclick=undo;
+
+/* ---------------- global clicks ---------------- */
+document.addEventListener("click",e=>{
+  const t=e.target;
+  const g=t.closest("[data-go]"); if(g){ go(g.dataset.go); return; }
+  const k=t.closest(".kpi[data-filter]"); if(k){ F.status=k.dataset.filter; go("count"); return; }
+  const c=t.closest(".bar-row[data-cat]"); if(c){ F.cat=c.dataset.cat; F.status="all"; go("count"); return; }
+  const tb=t.closest(".team-row[data-by]"); if(tb){ F.by=tb.dataset.by===ENV.me?"me":tb.dataset.by; F.status="all"; F.sort="recent"; go("count"); return; }
+  const fs=t.closest("[data-fs]"); if(fs){ F.status=fs.dataset.fs; renderCount(stats()); return; }
+  const fc=t.closest("[data-fc]"); if(fc){ F.cat=fc.dataset.fc; renderCount(stats()); return; }
+  const vf_=t.closest("[data-vf]"); if(vf_){ vf=vf_.dataset.vf; renderVar(stats()); return; }
+  const inc=t.closest("[data-inc]"), dec=t.closest("[data-dec]"), m=t.closest("[data-match]");
+  if(inc||dec){ const id=(inc||dec).dataset[inc?"inc":"dec"], it=S.items.find(i=>i.id===id), cur=S.counts[id]?.ab;
+    const base = cur==null ? 0 : cur; setAB(id, Math.max(0, base+(inc?1:-1))); refreshItem(id); return; }
+  if(m){ setAB(m.dataset.match, S.items.find(i=>i.id===m.dataset.match).cb); refreshItem(m.dataset.match); return; }
+  const o=t.closest("[data-open]"); if(o){ openItem(o.dataset.open); return; }
+  const tg=t.closest("[data-tog]"); if(tg){ S.prefs[tg.dataset.tog]=!S.prefs[tg.dataset.tog]; saveLocal(); applyPrefs(); render(); return; }
+  const fd=t.closest("[data-field]"); if(fd){ if(!ENV.isAdmin) return; S.fields[fd.dataset.field]=!S.fields[fd.dataset.field]; writeCfg(); saveLocal(); applyPrefs(); render(); toast(`${FIELD_LABEL[fd.dataset.field]} ${S.fields[fd.dataset.field]?"shown":"hidden"} for everyone`); return; }
+  const sg=t.closest("[data-seg] button"); if(sg){ S.prefs[sg.parentElement.dataset.seg]=sg.dataset.v; saveLocal(); applyPrefs(); return; }
+  const a=t.closest("[data-acc]"); if(a){ S.prefs.accent=a.dataset.acc; saveLocal(); applyPrefs(); return; }
+});
+document.addEventListener("change",e=>{ const id=e.target.dataset?.ab; if(!id) return; const raw=e.target.value.trim(); setAB(id, raw===""?null:Math.max(0,parseFloat(raw)||0)); setTimeout(()=>refreshItem(id),0); });
+document.addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&e.target.dataset?.ab){ e.preventDefault(); const ins=[...document.querySelectorAll("[data-ab]")], i=ins.indexOf(e.target), nx=ins[i+1]; e.target.blur(); if(nx) setTimeout(()=>document.querySelector(`[data-ab="${nx.dataset.ab}"]`)?.focus(),40); }
+});
+
+/* ---------------- item sheet ---------------- */
+function openSheet(html){ $("#sheetBody").innerHTML=html; $("#sheet").classList.add("on"); $("#scrim").classList.add("on"); }
+function closeSheet(){ $("#sheet").classList.remove("on"); $("#scrim").classList.remove("on"); }
+$("#scrim").onclick=closeSheet; $("#sheetX").onclick=closeSheet;
+function openItem(id){
+  const it=S.items.find(i=>i.id===id); if(!it) return;
+  const c=S.counts[id]||{}, s=statusOf(it), d=s!=="pending"?c.ab-it.cb:null, ro=!ENV.canWrite, sb=stickyLB();
+  const hist=(c.hist||[]).slice().reverse();
+  openSheet(`
+    <div style="display:flex;gap:8px;align-items:center"><span class="mono" style="color:var(--accent);font-weight:600;font-size:13px;flex:1">${esc(it.code)}</span><span class="badge b-${s}">${STATUS[s].label}</span></div>
+    <h3 style="margin-top:6px">${esc(it.desc)}</h3>
+    <dl class="kv">
+      <dt>Book qty (CB)</dt><dd><b>${S.prefs.blind&&s==="pending"?"Hidden (blind count)":fmt(it.cb)+" "+esc(it.unit)}</b></dd>
+      <dt>Manufacturer</dt><dd>${esc(it.mfr||"—")}</dd>
+      <dt>Model / Part</dt><dd>${esc(it.model||"—")}</dd>
+      ${c.ab!=null?`<dt>Last counted</dt><dd>${esc(nameOf(c.by,c.byName))} · ${new Date(c.t).toLocaleString([], {dateStyle:"medium",timeStyle:"short"})}</dd>`:""}
+      ${d!==null?`<dt>Variance</dt><dd style="color:${STATUS[s].col};font-weight:700">${d>0?"+":""}${fmt(d)} ${esc(it.unit)}</dd>`:""}
+    </dl>
+    <label style="font-size:12.5px;font-weight:600;color:var(--ink2)">Physical count (AB)</label>
+    <div class="big-step"><button id="sDec" ${ro?"disabled":""}>−</button><input id="sAB" inputmode="decimal" value="${c.ab??""}" placeholder="—" ${ro?"disabled":""}><button id="sInc" ${ro?"disabled":""}>+</button></div>
+    ${S.fields.loc||S.fields.bin?`<div class="row">
+      ${S.fields.loc?`<div class="field"><label>📍 Location</label><input id="sLoc" value="${esc(c.loc ?? (c.ab==null?sb.loc:""))}" placeholder="e.g. Store B, Rack 4" ${ro?"disabled":""}></div>`:""}
+      ${S.fields.bin?`<div class="field"><label>🗄 Bin</label><input id="sBin" value="${esc(c.bin ?? (c.ab==null?sb.bin:""))}" placeholder="e.g. B-12" ${ro?"disabled":""}></div>`:""}
+    </div>`:""}
+    ${S.fields.remark?`<div class="field"><label>📝 Remark</label><textarea id="sRemark" rows="2" placeholder="e.g. Damaged packaging" ${ro?"disabled":""}>${esc(c.remark||"")}</textarea></div>`:""}
+    <div class="set ${ro?"dis":""}" id="sFlag" style="padding:10px 0;border:0"><div class="t"><b>⚑ Flag for review</b><span>Mark for recount or supervisor check</span></div><div class="sw ${c.flag?"on":""}"></div></div>
+    ${ro?"":`<div class="row" style="margin-top:8px"><button class="btn danger" id="sClear">Clear</button>${S.prefs.blind?"":`<button class="btn" id="sMatch">= ${fmt(it.cb)}</button>`}<button class="btn pri" id="sSave">Save</button></div>`}
+    <div class="sec-t" style="margin-top:22px">Change history <span style="text-transform:none;letter-spacing:0;font-weight:500;color:var(--ink3)">${hist.length} change${hist.length!==1?"s":""}</span></div>
+    ${hist.length?`<div class="hist">${hist.map(h=>`<div><b>${esc(nameOf(h.by,h.byName))}</b> ${h.ab==null?"cleared the count":h.prev==null?`counted <b>${fmt(h.ab)}</b>`:h.prev!==h.ab?`changed <b>${fmt(h.prev)} → ${fmt(h.ab)}</b>`:"updated details"}
+      ${[S.fields.loc&&h.loc?"📍 "+esc(h.loc):"",S.fields.bin&&h.bin?"🗄 "+esc(h.bin):"",S.fields.remark&&h.remark?"📝 "+esc(h.remark):""].filter(Boolean).join(" · ")?`<br><span style="color:var(--ink3)">${[S.fields.loc&&h.loc?"📍 "+esc(h.loc):"",S.fields.bin&&h.bin?"🗄 "+esc(h.bin):"",S.fields.remark&&h.remark?"📝 "+esc(h.remark):""].filter(Boolean).join(" · ")}</span>`:""}
+      <br><span style="color:var(--ink3);font-size:11.5px">${new Date(h.t).toLocaleString([], {dateStyle:"medium",timeStyle:"short"})}</span></div>`).join("")}</div>`:`<div style="color:var(--ink3);font-size:13px">Not counted yet.</div>`}
+  `);
+  if(ro) return;
+  const inp=$("#sAB");
+  $("#sDec").onclick=()=>{ inp.value=Math.max(0,(parseFloat(inp.value)||0)-1); };
+  $("#sInc").onclick=()=>{ inp.value=(parseFloat(inp.value)||0)+1; };
+  $("#sFlag").onclick=e=>e.currentTarget.querySelector(".sw").classList.toggle("on");
+  $("#sMatch")&&($("#sMatch").onclick=()=>{ inp.value=it.cb; });
+  $("#sClear").onclick=()=>{ applyChange(id,{ab:null,loc:"",bin:"",remark:"",flag:false}); closeSheet(); render(); };
+  $("#sSave").onclick=()=>{
+    const raw=inp.value.trim(); const patch={ab: raw===""?null:Math.max(0,parseFloat(raw)||0), flag:$("#sFlag .sw").classList.contains("on")};
+    if($("#sLoc")) patch.loc=$("#sLoc").value; if($("#sBin")) patch.bin=$("#sBin").value; if($("#sRemark")) patch.remark=$("#sRemark").value;
+    applyChange(id,patch); closeSheet(); render();
+  };
+}
+
+/* ---------------- quick count ---------------- */
+let fq=[],fi=0,fbuf="",fmode="pending";
+function buildFocusQueue(){ fq=filtered().filter(it=>fmode==="all"||statusOf(it)==="pending").map(i=>i.id); if(!fq.length&&fmode==="pending") fq=S.items.filter(it=>statusOf(it)==="pending").map(i=>i.id); }
+function openFocus(){ buildFocusQueue(); fi=0; loadBuf(); $("#focus").classList.add("on"); renderFocus(); }
+function loadBuf(){ const c=S.counts[fq[fi]]; fbuf=c?.ab==null?"":String(c.ab); const sb=stickyLB(); FL.loc=c?.loc ?? (c?.ab==null?sb.loc:""); FL.bin=c?.bin ?? (c?.ab==null?sb.bin:""); FL.dirty=false; }
+const FL={loc:"",bin:"",dirty:false};
+function renderFocus(){
+  const st=stats(); $("#fProg").style.width=st.pct+"%";
+  document.querySelectorAll("#fMode button").forEach(b=>b.classList.toggle("on",b.dataset.v===fmode));
+  const done=!fq.length;
+  ["#fDisp","#keypad","#fLoc"].forEach(s=>$(s).classList.toggle("hide",done)); document.querySelector(".fbtns").classList.toggle("hide",done);
+  if(done){ $("#fTitle").innerHTML=`All done<small>Nothing pending in this view</small>`; $("#fCard").innerHTML=`<div class="empty"><div class="e">🎉</div><b>Every item is counted.</b><br>Review variances or export to Excel.</div>`; return; }
+  const it=S.items.find(i=>i.id===fq[fi]), s=statusOf(it), blind=S.prefs.blind, c=S.counts[it.id];
+  $("#fTitle").innerHTML=`Item ${fi+1} of ${fq.length}<small>${st.counted}/${st.total} counted by the team · swipe to move</small>`;
+  $("#fCard").innerHTML=`<div class="code mono">${esc(it.code)}</div><div class="desc">${esc(it.desc)}</div><div class="meta">${esc([it.mfr,it.model].filter(x=>x&&String(x).toUpperCase()!=="NA").join(" · "))}</div>
+    <div class="cbbig"><div><small>BOOK (CB)</small><b>${blind?"•••":fmt(it.cb)}</b></div><div><small>STATUS</small><b style="font-size:16px;color:${STATUS[s].col}">${STATUS[s].label}</b></div></div>
+    <div class="meta" style="margin-top:8px">${esc(it.unit)}${c?.ab!=null?` · last by ${esc(nameOf(c.by,c.byName))} ${ago(c.t)}`:""}</div>`;
+  const ae=document.activeElement?.id;
+  if(ae!=="fLocIn" && ae!=="fBinIn"){
+    $("#fLoc").innerHTML=(S.fields.loc?`<input id="fLocIn" placeholder="📍 Location" value="${esc(FL.loc)}">`:"")+(S.fields.bin?`<input id="fBinIn" placeholder="🗄 Bin" value="${esc(FL.bin)}">`:"");
+    $("#fLoc").classList.toggle("hide", !S.fields.loc && !S.fields.bin);
+  }
+  $("#fDisp").textContent=fbuf===""?"Enter physical count":fbuf; $("#fDisp").classList.toggle("empty",fbuf==="");
+  $("#keypad").innerHTML=["1","2","3","4","5","6","7","8","9",blind?".":"=","0","⌫"].map(k=>`<button data-k="${k}" ${k==="="?'style="font-size:15px;color:var(--accent)"':""}>${k==="="?"= "+fmt(it.cb):k}</button>`).join("");
+  $("#fPrev").disabled=fi===0; $("#fPrev").style.opacity=fi===0?.4:1;
+}
+$("#fLoc").addEventListener("input",e=>{ if(e.target.id==="fLocIn") FL.loc=e.target.value; if(e.target.id==="fBinIn") FL.bin=e.target.value; FL.dirty=true; });
+$("#keypad").addEventListener("click",e=>{ const k=e.target.closest("[data-k]")?.dataset.k; if(!k) return; const it=S.items.find(i=>i.id===fq[fi]);
+  if(k==="⌫") fbuf=fbuf.slice(0,-1); else if(k==="=") fbuf=String(it.cb); else if(k==="."){ if(!fbuf.includes(".")) fbuf=(fbuf||"0")+"."; } else if(fbuf.length<7) fbuf=fbuf==="0"?k:fbuf+k;
+  buzz(); renderFocus(); });
+function fMove(dir){ fi=Math.min(Math.max(fi+dir,0),fq.length-1); loadBuf(); document.activeElement?.blur?.(); renderFocus(); }
+$("#fPrev").onclick=()=>fMove(-1);
+$("#fNext").onclick=()=>{ if(fi<fq.length-1) fMove(1); else toast("End of list"); };
+$("#fSave").onclick=()=>{
+  if(fbuf===""){ toast("Enter a count first"); return; }
+  const patch={ab:parseFloat(fbuf)}; if(S.fields.loc) patch.loc=FL.loc; if(S.fields.bin) patch.bin=FL.bin;
+  applyChange(fq[fi],patch);
+  if(S.prefs.autoNext){ if(fmode==="pending"){ fq.splice(fi,1); if(fi>=fq.length) fi=Math.max(0,fq.length-1); } else if(fi<fq.length-1) fi++; loadBuf(); }
+  document.activeElement?.blur?.(); renderFocus();
+};
+$("#fClose").onclick=()=>{ $("#focus").classList.remove("on"); render(); };
+$("#fMode").onclick=e=>{ const b=e.target.closest("button"); if(!b) return; fmode=b.dataset.v; buildFocusQueue(); fi=0; loadBuf(); renderFocus(); };
+$("#fab").onclick=openFocus;
+(()=>{ let x0=null; const el=$("#fCard"); el.addEventListener("touchstart",e=>{x0=e.touches[0].clientX;},{passive:true}); el.addEventListener("touchend",e=>{ if(x0==null) return; const dx=e.changedTouches[0].clientX-x0; if(Math.abs(dx)>60) fMove(dx<0?1:-1); x0=null; }); })();
+document.addEventListener("keydown",e=>{
+  if(!$("#focus").classList.contains("on") || e.target.matches("input")) return;
+  if(/^[0-9]$/.test(e.key)){ fbuf=(fbuf==="0"?"":fbuf)+e.key; renderFocus(); }
+  else if(e.key==="Backspace"){ fbuf=fbuf.slice(0,-1); renderFocus(); }
+  else if(e.key==="Enter") $("#fSave").click(); else if(e.key==="ArrowRight") fMove(1); else if(e.key==="ArrowLeft") fMove(-1); else if(e.key==="Escape") $("#fClose").click();
+});
+
+/* ---------------- variance view ---------------- */
+let vf="all";
+function renderVar(st){
+  const net=st.excessQty-st.shortQty;
+  $("#varKpi").innerHTML=[["Accuracy",st.counted?st.acc.toFixed(1)+"%":"—",`${st.match} of ${st.counted} lines match`],["Net variance",(net>0?"+":"")+fmt(net),"units vs book"],["Short lines",st.short,`−${fmt(st.shortQty)} units`],["Excess lines",st.excess,`+${fmt(st.excessQty)} units`]]
+    .map(([l,v,s])=>`<div class="kpi" style="cursor:default"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join("");
+  $("#fVar").innerHTML=[["all","All variances",st.short+st.excess],["short","Short",st.short],["excess","Excess",st.excess],["flag","⚑ Flagged",st.flagged]].map(([k,l,n])=>`<button class="chip ${vf===k?"on":""}" data-vf="${k}">${l}<span class="c">${n}</span></button>`).join("");
+  let rows; if(vf==="flag") rows=S.items.filter(it=>S.counts[it.id]?.flag).map(it=>({it,d:statusOf(it)==="pending"?0:S.counts[it.id].ab-it.cb})); else rows=varianceItems().filter(r=>vf==="all"||statusOf(r.it)===vf);
+  $("#varList").innerHTML=rows.length?rows.map(r=>statusOf(r.it)==="pending"?`<div class="var-row" data-open="${r.it.id}"><span class="dot" style="background:var(--flag)"></span><div class="m"><b>${esc(r.it.desc)}</b><span class="mono">${esc(r.it.code)}</span> <span>· not yet counted</span></div><div class="q">—</div></div>`:varRow(r)).join(""):`<div class="empty"><div class="e">✨</div>${st.counted?"No variances in this view":"Count some items to see variances"}</div>`;
+}
+$("#btnCopy").onclick=async()=>{
+  const st=stats(), vi=varianceItems();
+  const txt=`${S.meta.store} — Stock Audit ${S.meta.date}\nCounted ${st.counted}/${st.total} (${st.pct.toFixed(0)}%) · Accuracy ${st.acc.toFixed(1)}%\nMatched ${st.match} · Short ${st.short} (−${fmt(st.shortQty)}) · Excess ${st.excess} (+${fmt(st.excessQty)}) · Pending ${st.pending}\n`+
+    (vi.length?"\nVariances:\n"+vi.map(({it,d})=>{const c=S.counts[it.id]; return `• ${it.code} ${it.desc}: book ${it.cb}, physical ${c.ab} (${d>0?"+":""}${d})${c.bin?" ["+c.bin+"]":""} — ${nameOf(c.by,c.byName)}${c.remark?" — "+c.remark:""}`;}).join("\n"):"");
+  try{ await navigator.clipboard.writeText(txt); toast("Summary copied — paste into email or WhatsApp"); }
+  catch(e){ openSheet(`<h3>Audit summary</h3><p style="color:var(--ink2);font-size:13px">Select and copy the text below.</p><textarea rows="12" readonly>${esc(txt)}</textarea>`); }
+};
+
+/* ---------------- export ---------------- */
+const plainName=(id,fb)=>nameOf(id,fb).replace(" (you)","");
+const fdt=t=>t?new Date(t).toLocaleString():"";
+function exportRows(){
+  return S.items.map(it=>{ const c=S.counts[it.id]||{}, s=statusOf(it);
+    const r={"Sl No":it.sl,"Item":it.code,"Description":it.desc,"CB":it.cb,"AB":c.ab??"","Issue Unit":it.unit,"Manufacturer":it.mfr,"Model":it.model,"Variance":s==="pending"?"":c.ab-it.cb,"Status":STATUS[s].label};
+    if(S.fields.loc) r["Location"]=c.loc||""; if(S.fields.bin) r["Bin"]=c.bin||""; if(S.fields.remark) r["Remark"]=c.remark||"";
+    r["Flag"]=c.flag?"Yes":""; r["Counted By"]=c.ab!=null?plainName(c.by,c.byName):""; r["Counted At"]=c.ab!=null?fdt(c.t):""; r["Edits"]=(c.hist||[]).length||"";
+    return r; });
+}
+const fileBase=()=>(S.meta.store||"Stock").replace(/[^\w\- ]+/g,"").trim().replace(/\s+/g,"_")+"_Audit_"+(S.meta.date||today());
+async function saveFile(filename,data,mime){
+  try{ const dl=window.claude?.use?await claude.use("downloads"):null; if(dl){ await dl.save({filename,data}); toast("Exported "+filename); return; } }
+  catch(e){ if(e&&e.code==="declined"){ toast("Export cancelled"); return; } if(e&&e.code==="rate_limited"){ toast("Please wait a moment and try again"); return; } }
+  try{ const blob=data instanceof Blob?data:new Blob([data],{type:mime}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1500); toast("Exported "+filename); }
+  catch(e){ toast("Export isn't available in this view"); }
+}
+const toAoa=rows=>{ const h=Object.keys(rows[0]||{}); return [h,...rows.map(r=>h.map(k=>r[k]??""))]; };
+async function exportXlsx(){
+  const st=stats(), rows=exportRows(), sheets=[];
+  sheets.push({name:"Audit",rows:toAoa(rows),header:true});
+  const vr=rows.filter(r=>r.Status==="Short"||r.Status==="Excess"||r.Flag==="Yes").sort((a,b)=>Math.abs(+b.Variance||0)-Math.abs(+a.Variance||0));
+  sheets.push({name:"Variances",rows:vr.length?toAoa(vr):[["No variances"]],header:!!vr.length});
+  const hr=allHistory().map(h=>{ const r={"When":fdt(h.t),"User":plainName(h.by,h.byName),"Item":h.it.code,"Description":h.it.desc,"CB":h.it.cb,"Previous AB":h.prev??"","New AB":h.ab??"(cleared)"};
+    if(S.fields.loc) r["Location"]=h.loc||""; if(S.fields.bin) r["Bin"]=h.bin||""; if(S.fields.remark) r["Remark"]=h.remark||""; return r; });
+  sheets.push({name:"Change log",rows:hr.length?toAoa(hr):[["No changes yet"]],header:!!hr.length});
+  const tr=Object.values(st.people).sort((a,b)=>b.n-a.n).map(p=>({"Counter":plainName(p.id,p.name),"Items counted":p.n,"Matched":p.match,"Match %":p.n?+(p.match/p.n*100).toFixed(1):0,"Last activity":fdt(p.last)}));
+  sheets.push({name:"Team",rows:tr.length?toAoa(tr):[["No counts yet"]],header:!!tr.length});
+  const sum=[["Stock Audit Summary"],[],["Store",S.meta.store],["Audit date",S.meta.date],["Reference",S.meta.ref],["Source file",S.meta.source],["Exported",new Date().toLocaleString()],["Exported by",S.prefs.myName||""],[],
+    ["Metric","Value"],["Total items",st.total],["Counted",st.counted],["Pending",st.pending],["Progress %",+st.pct.toFixed(1)],["Matched",st.match],["Short",st.short],["Excess",st.excess],["Flagged",st.flagged],
+    ["Accuracy % (matched / counted)",+st.acc.toFixed(1)],["Book qty (all items)",st.bookQty],["Shortage units",st.shortQty],["Excess units",st.excessQty],["Net variance units",st.excessQty-st.shortQty],["Counters",Object.keys(st.people).length],[],
+    ["Category","Items","Counted","Matched","Short","Excess","Progress %"],...Object.entries(st.cats).sort().map(([k,c])=>[k,c.n,c.done,c.match,c.short,c.excess,+(c.done/c.n*100).toFixed(0)])];
+  sheets.push({name:"Summary",rows:sum,widths:[32,26,10,10,8,8,11],boldRows:[0,9,25]});
+  await saveFile(fileBase()+".xlsx", MiniXLSX.write(sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+}
+async function exportCsv(){ const rows=exportRows(), head=Object.keys(rows[0]); const q=v=>{v=String(v??""); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
+  await saveFile(fileBase()+".csv","﻿"+[head.join(","),...rows.map(r=>head.map(h=>q(r[h])).join(","))].join("\n"),"text/csv"); }
+$("#btnExport").onclick=exportXlsx; $("#btnExportTop").onclick=exportXlsx; $("#btnExportVar").onclick=exportXlsx; $("#btnCsv").onclick=exportCsv;
+
+/* ---------------- admin: import / reset / add ---------------- */
+async function clearAllCounts(){
+  const ids=Object.keys(S.counts); S.counts={}; undoStack.length=0; saveLocal(); render();
+  if(ENV.mode==="lan"){ lanPending={}; savePending(); try{ await api("api/clear",{pin:S.prefs.pin}); }catch(e){ toast(e.status===403?"Wrong owner PIN":"Couldn't clear — check your internet"); } return; }
+  if(ENV.mode==="cloud"){ for(let i=0;i<ids.length;i+=8) await Promise.all(ids.slice(i,i+8).map(id=>pushCount(id,null))); }
+}
+$("#fileIn").onchange=async e=>{
+  const f=e.target.files[0]; e.target.value=""; if(!f) return;
+  try{
+    const aoa=await MiniXLSX.readFile(f);
+    const norm=s=>String(s).toLowerCase().replace(/[^a-z]/g,"");
+    const hr=aoa.findIndex(r=>r.some(c=>["item","itemcode","code","partno"].includes(norm(c)))); if(hr<0) throw new Error("Couldn't find an 'Item' column header.");
+    const H=aoa[hr].map(norm), col=(...n)=>H.findIndex(h=>n.includes(h));
+    const ci={sl:col("slno","sl","sno","no"),code:col("item","itemcode","code","partno"),desc:col("description","desc","itemdescription"),cb:col("cb","bookqty","systemqty","qty","quantity","closingbalance","onhand"),unit:col("issueunit","unit","uom"),mfr:col("manufacturer","make","mfr"),model:col("model","partnumber","modelno")};
+    // counts columns (present in a StockCount export) — lets the owner resume an audit
+    const cc={ab:col("ab","physicalqty","physical","counted","actual","actualqty"),loc:col("location","loc"),bin:col("bin","binno","shelf"),remark:col("remark","remarks","note","notes"),flag:col("flag","flagged"),by:col("countedby","counter","by"),at:col("countedat","when","time")};
+    const parseAt=v=>{ if(typeof v==="number"&&v>20000&&v<80000) return Math.round((v-25569)*86400000+new Date().getTimezoneOffset()*60000);
+      const m=/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4}),?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(v||"")); if(!m) return Date.now();
+      let d=+m[1], mo=+m[2]; if(mo>12&&d<=12){ [d,mo]=[mo,d]; } return new Date(+m[3],mo-1,d,+m[4],+m[5],+(m[6]||0)).getTime(); };
+    const batch=Date.now().toString(36), items=[], counts={};
+    aoa.slice(hr+1).forEach(r=>{ const code=String(r[ci.code]??"").trim(); if(!code) return;
+      const id=batch+"_"+(items.length+1);
+      items.push({id, sl:ci.sl>=0&&r[ci.sl]!==""?r[ci.sl]:items.length+1, code, desc:String(ci.desc>=0?r[ci.desc]:"").trim(), cb:ci.cb>=0?(+r[ci.cb]||0):0, unit:ci.unit>=0?String(r[ci.unit]||"EACH"):"EACH", mfr:ci.mfr>=0?String(r[ci.mfr]):"", model:ci.model>=0?String(r[ci.model]):""});
+      if(cc.ab<0) return; const raw=r[cc.ab]; if(raw===""||raw==null||isNaN(+raw)) return;
+      const g=k=>cc[k]>=0?String(r[cc[k]]??"").trim():"";
+      const t=cc.at>=0?parseAt(r[cc.at]):Date.now(), byName=g("by")||"Imported";
+      const c={ab:+raw, t, by:"imp_"+byName.toLowerCase().replace(/[^a-z0-9]+/g,"_"), byName, loc:g("loc"), bin:g("bin"), remark:g("remark")};
+      if(/^(yes|y|true|1|⚑)$/i.test(g("flag"))) c.flag=true;
+      c.hist=[{t, by:c.by, byName, ab:c.ab, prev:null, loc:c.loc, bin:c.bin, remark:c.remark}];
+      counts[id]=c; });
+    if(!items.length) throw new Error("No item rows found.");
+    const nCounts=Object.keys(counts).length;
+    if(JSON.stringify(packItems(items)).length>230000) throw new Error(`That sheet has ${items.length} items — too many to share in one audit. Split it into smaller sheets.`);
+    openSheet(`<h3>Import ${esc(f.name)}?</h3><p style="color:var(--ink2)">Found <b>${items.length}</b> items. This replaces the item list <b>for everyone</b> and clears all current counts — export first if you need them.</p>
+      <div class="field"><label>Store / location name</label><input id="impName" value="${esc(f.name.replace(/\.(xlsx|xlsm|csv)$/i,"").replace(/_/g," "))}"></div>
+      ${nCounts?`<div class="banner info">↻ <div>This sheet also has <b>${nCounts} counts</b> (with who counted, location, bin and remarks). Resume the audit to carry them over so the team continues from there.</div></div>
+      <button class="btn pri block" id="impResume">Resume audit — items + ${nCounts} counts</button><div class="row" style="margin-top:8px"><button class="btn" id="impNo">Cancel</button><button class="btn" id="impGo">Items only</button></div>`
+      :`<div class="row"><button class="btn" id="impNo">Cancel</button><button class="btn pri" id="impGo">Import</button></div>`}`);
+    $("#impNo").onclick=closeSheet;
+    const doImport=async withCounts=>{ const store=$("#impName")?.value; closeSheet(); await clearAllCounts(); S.items=items; S.meta=Object.assign({},S.meta,{store:store||S.meta.store,source:f.name}); if(!withCounts) S.meta.date=today();
+      await writeCfg(); saveLocal(); F.cat="all"; F.status="all"; F.by="all";
+      if(withCounts){ for(const [id,c] of Object.entries(counts)){ S.counts[id]=c; pushCount(id,c); } saveLocal(); }
+      renderAll(); toast(withCounts?`Resumed: ${items.length} items, ${nCounts} counts`:`Imported ${items.length} items`); };
+    $("#impGo").onclick=()=>doImport(false);
+    if($("#impResume")) $("#impResume").onclick=()=>doImport(true);
+  }catch(err){ openSheet(`<h3>Couldn't import</h3><p style="color:var(--ink2)">${esc(err.message)}</p><p style="color:var(--ink3);font-size:13px">The first sheet needs a header row with an <b>Item</b> column. Description, CB, Issue Unit, Manufacturer and Model are picked up when present.</p><button class="btn block" id="impOk">OK</button>`); $("#impOk").onclick=closeSheet; }
+};
+$("#btnResetCounts").onclick=()=>{
+  openSheet(`<h3>Clear all counts?</h3><p style="color:var(--ink2)">This removes <b>everyone's</b> counts, locations, bins, remarks and history. The item list stays. Export to Excel first if you need a record.</p>
+    <div class="row"><button class="btn" id="rNo">Cancel</button><button class="btn pri" style="background:var(--short)" id="rGo">Clear counts</button></div>`);
+  $("#rNo").onclick=closeSheet; $("#rGo").onclick=async()=>{ closeSheet(); await clearAllCounts(); toast("All counts cleared"); };
+};
+$("#btnAdd").onclick=()=>{
+  if(!ENV.isAdmin){
+    openSheet(`<h3>Found an unlisted item?</h3><p style="color:var(--ink2)">Only the audit owner can add items to the list. Tell them the code and quantity, or add a remark on the closest matching item.</p><button class="btn block" id="nOk">OK</button>`); $("#nOk").onclick=closeSheet; return;
+  }
+  const sb=stickyLB();
+  openSheet(`<h3>Add item not on the list</h3><p style="color:var(--ink2);font-size:13px">Book qty is 0 — it will show as Excess and is flagged.</p>
+    <div class="field"><label>Item code</label><input id="nCode" placeholder="e.g. AFC-NEW-001"></div>
+    <div class="field"><label>Description</label><input id="nDesc"></div>
+    <div class="row"><div class="field"><label>Physical count</label><input id="nAb" inputmode="decimal"></div><div class="field"><label>Unit</label><input id="nUnit" value="EACH"></div></div>
+    ${S.fields.loc||S.fields.bin?`<div class="row">${S.fields.loc?`<div class="field"><label>📍 Location</label><input id="nLoc" value="${esc(sb.loc)}"></div>`:""}${S.fields.bin?`<div class="field"><label>🗄 Bin</label><input id="nBin" value="${esc(sb.bin)}"></div>`:""}</div>`:""}
+    <button class="btn pri block" id="nGo">Add item</button>`);
+  $("#nGo").onclick=()=>{ const code=$("#nCode").value.trim(); if(!code){ $("#nCode").focus(); return; }
+    const id="n"+Date.now().toString(36), maxSl=Math.max(0,...S.items.map(i=>+i.sl||0));
+    S.items.push({id,sl:maxSl+1,code,desc:$("#nDesc").value.trim()||"(Unlisted item)",cb:0,unit:$("#nUnit").value||"EACH",mfr:"",model:""});
+    writeCfg(); saveLocal();
+    const ab=parseFloat($("#nAb").value); const patch={flag:true, remark:"Not on system list"}; if(!isNaN(ab)) patch.ab=ab;
+    if($("#nLoc")) patch.loc=$("#nLoc").value; if($("#nBin")) patch.bin=$("#nBin").value;
+    applyChange(id,patch,{silent:true}); closeSheet(); renderAll(); toast("Item added and flagged"); };
+};
+
+/* ---------------- local backup / restore ---------------- */
+$("#btnBackup").onclick=()=>{
+  const data={app:"StockCount",v:2,saved:new Date().toISOString(),items:S.items,meta:S.meta,fields:S.fields,counts:S.counts,prefs:S.prefs};
+  saveFile(fileBase()+"_backup.json", JSON.stringify(data), "application/json");
+};
+$("#restoreIn").onchange=async e=>{
+  const f=e.target.files[0]; e.target.value=""; if(!f) return;
+  try{
+    const d=JSON.parse(await f.text());
+    if(!d || d.app!=="StockCount" || !Array.isArray(d.items)) throw new Error("This isn't a StockCount backup file.");
+    const n=Object.values(d.counts||{}).filter(c=>c.ab!=null).length;
+    openSheet(`<h3>Restore backup?</h3><p style="color:var(--ink2)">Backup from <b>${esc(new Date(d.saved).toLocaleString())}</b>: ${d.items.length} items, ${n} counted. This replaces everything currently on this device.</p>
+      <div class="row"><button class="btn" id="rsNo">Cancel</button><button class="btn pri" id="rsGo">Restore</button></div>`);
+    $("#rsNo").onclick=closeSheet;
+    $("#rsGo").onclick=()=>{ S.items=d.items; S.meta=Object.assign({},DEFAULT_META,d.meta||{}); S.fields=Object.assign({},DEFAULT_FIELDS,d.fields||{}); S.counts=d.counts||{};
+      if(d.prefs) S.prefs=Object.assign({},DEFAULT_PREFS,d.prefs); undoStack.length=0; saveLocal(); closeSheet(); F.cat="all"; F.status="all"; F.by="all"; renderAll(); toast("Backup restored"); };
+  }catch(err){ openSheet(`<h3>Couldn't restore</h3><p style="color:var(--ink2)">${esc(err.message)}</p><button class="btn block" id="rsOk">OK</button>`); $("#rsOk").onclick=closeSheet; }
+};
+
+/* ---------------- invite ---------------- */
+$("#btnInvite").onclick=async()=>{
+  const msg=`Join the ${S.meta.store} stock count 📦\nOpen: ${location.origin+location.pathname}\nTeam code: ${S.prefs.team}\nEnter your name, then count. Updates show live for everyone.`;
+  try{ await navigator.clipboard.writeText(msg); toast("Invite copied — paste it in WhatsApp"); }
+  catch(e){ openSheet(`<h3>Invite message</h3><textarea rows="6" readonly>${esc(msg)}</textarea>`); }
+};
+
+/* ---------------- owner PIN (LAN) ---------------- */
+$("#btnPin").onclick=async()=>{
+  const pin=$("#sPin").value.trim(); if(!pin) return;
+  try{ const ok=(await api("api/pin",{pin})).ok; if(ok){ S.prefs.pin=pin; ENV.isAdmin=true; saveLocal(); applyRoles(); render(); if(!ENV.cfgOnServer){ ENV.cfgOnServer=true; writeCfg(); } toast("Owner controls unlocked"); if(!S.prefs.myName) askName(); } else { toast("Wrong PIN"); } }
+  catch(e){ toast("Can't connect — check your internet"); }
+};
+
+/* ---------------- settings inputs ---------------- */
+let metaT;
+[["#sStore","store"],["#sDate","date"],["#sRef","ref"]].forEach(([sel,k])=>$(sel).addEventListener("input",e=>{ S.meta[k]=e.target.value; renderHeader(stats()); clearTimeout(metaT); metaT=setTimeout(()=>{ writeCfg(); saveLocal(); },700); }));
+$("#sMyName").addEventListener("input",e=>{ S.prefs.myName=e.target.value.trim(); saveLocal(); });
+
+/* ---------------- render ---------------- */
+function renderHeader(st){
+  $("#hStore").textContent=S.meta.store||"Stock audit";
+  $("#hSub").textContent=`${st.counted}/${st.total} counted · ${st.pct.toFixed(0)}% · ${st.short+st.excess} variance${st.short+st.excess!==1?"s":""}`;
+  $("#hProg").style.width=st.pct+"%";
+}
+function render(){ const st=stats(); renderHeader(st); if(view==="dash") renderDash(st); else if(view==="count") renderCount(st); else if(view==="var") renderVar(st);
+  if($("#focus").classList.contains("on")) renderFocus(); }
+function renderAll(){
+  if(document.activeElement?.id!=="sStore") $("#sStore").value=S.meta.store||"";
+  if(document.activeElement?.id!=="sDate") $("#sDate").value=S.meta.date||"";
+  if(document.activeElement?.id!=="sRef") $("#sRef").value=S.meta.ref||"";
+  applyPrefs(); applyRoles(); render();
+}
+setInterval(()=>{ if(view==="dash" && !document.hidden) renderDash(stats()); }, 60000);
+renderAll();
+$("#btnSwitch").onclick=()=>{ liveOff && liveOff(); liveOff=null; S.prefs.team=""; S.prefs.pin=""; S.counts={}; lanPending={}; savePending(); ENV.isAdmin=false; ENV.needCode=true; saveLocal(); applyRoles(); render(); updateLanStatus(); askCode(); };
+if(!window.claude) startLan();
+</script>
+</body>
+</html>
